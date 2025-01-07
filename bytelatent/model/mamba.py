@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Union, List, Tuple
-from transformers import Mamba2Config, Mamba2ForCausalLM
+from transformers import Mamba2Config, Mamba2Model
 
 
 class GlobalMamba(nn.Module):
@@ -18,11 +18,12 @@ class GlobalMamba(nn.Module):
             hidden_size=args.dim,
             num_hidden_layers=args.n_layers,
             num_heads=args.n_heads,
-            head_dim=args.dim // args.n_heads * 2,
+            head_dim=args.dim // args.n_heads,
             use_cache=True,
             rms_norm=True,
+            return_dict=True,
         )
-        self.model = Mamba2ForCausalLM(self.config)
+        self.model = Mamba2Model(self.config)
 
         # Match transformer's projection capability
         self.token_embedding_projection = None
@@ -66,7 +67,6 @@ class GlobalMamba(nn.Module):
         h = F.dropout(h, p=self.dropout, training=self.training)
 
         outputs = self.model(
-            input_ids=tokens,
             inputs_embeds=h,
             use_cache=cache is not None,
             cache_params=cache,
