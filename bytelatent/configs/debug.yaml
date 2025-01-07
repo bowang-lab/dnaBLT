@@ -27,6 +27,7 @@ model:
   vocab_size: 260
   dim_token: 256
   patch_size: 6
+  architecture: "vanilla"   # for Mamba use "mamba"
   tokenization_mode: "bytes"
   patching_mode: "space"
   tie_local_encoder_decoder_logits: false
