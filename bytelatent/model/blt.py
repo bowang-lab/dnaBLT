@@ -19,6 +19,7 @@ from bytelatent.model.local_models import LocalDecoder, LocalEncoder
 from bytelatent.model.transformer import GlobalTransformer
 from bytelatent.model.utils import downsample
 from bytelatent.tokenizers.constants import BOE_ID, BOS_ID, EOS_ID, OFFSET, PAD_ID
+from bytelatent.model.mamba import GlobalMamba
 
 
 def attention_flops_per_token(n_layers, seq_len, dim, causal):
@@ -404,15 +405,18 @@ def patch_ids_from_lengths(patch_lengths, seq_len):
 
 class ByteLatentTransformerArgs(BaseTransformerArgs):
     model_config = ConfigDict(extra="forbid")
+
     # Basic model configuration
     seed: int = 42
     vocab_size: int = -1
     dim: int = 512
     n_layers: int = 8
     n_heads: int = 8
+    state_size: int = 128  # For Mamba
     # TODO: What is the purpose of this parameter?
     weight_tying: bool = False
     sliding_window: Optional[int] = None
+    architecture: str = "vanilla"  # For Mamba use "mamba"
 
     # Architecture and dimensions
     dim_token: int = 256
@@ -497,7 +501,6 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     output_size: int = -1
 
     # Additional parameters from ModelArgs
-    architecture: str = "vanilla"
     share_encoder_decoder_emb: bool = True
     global_local_decoder_residual_layer: str | None = None
 
@@ -590,6 +593,20 @@ class GlobalTransformerArgs(ByteLatentTransformerArgs):
         self.cross_attn_decoder = False
 
 
+class GlobalMambaArgs(ByteLatentTransformerArgs):
+    # Global encoder specific dimensions
+    dim_token_emb: int | None = None
+    dim_patch_emb: int | None = None
+
+    def __post_init__(self):
+        # Override base args with global mamba specific values
+        self.architecture = "mamba"
+        self.dim = self.dim_global
+        self.n_layers = self.n_layers_global
+        self.n_heads = self.n_heads_global
+        self.state_size = self.state_size
+
+
 class LocalDecoderArgs(ByteLatentTransformerArgs):
     # Local decoder specific dimensions
     dim_token_emb: int | None = None
@@ -622,6 +639,20 @@ def create_global_transformer(args: ByteLatentTransformerArgs) -> GlobalTransfor
     )
 
     return GlobalTransformer(global_args)
+
+
+def create_global_mamba(args: ByteLatentTransformerArgs) -> GlobalMamba:
+    global_args = args.model_copy(
+        deep=True,
+        update=dict(
+            dim=args.dim_global,
+            n_layers=args.n_layers_global,
+            n_heads=args.n_heads_global,
+            state_size=args.state_size,
+        ),
+    )
+
+    return GlobalMamba(global_args)
 
 
 def create_local_encoder(args: ByteLatentTransformerArgs) -> LocalEncoder:
@@ -795,8 +826,14 @@ class ByteLatentTransformer(nn.Module):
         )
 
         # ByteLatent modules
+        if args.architecture == "vanilla":
+            self.global_transformer = create_global_transformer(args)
+        elif args.architecture == "mamba":
+            self.global_transformer = create_global_mamba(args)
+        else:
+            raise ValueError(f"Invalid architecture: {args.architecture}")
+
         self.local_encoder = create_local_encoder(args)
-        self.global_transformer = create_global_transformer(args)
         self.local_decoder = create_local_decoder(args)
         self.encoder_hash_tok_embedding = init_embeddings(
             args,
