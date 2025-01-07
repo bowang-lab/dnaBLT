@@ -18,7 +18,7 @@ class GlobalMamba(nn.Module):
             hidden_size=args.dim,
             num_hidden_layers=args.n_layers,
             num_heads=args.n_heads,
-            head_dim=args.dim // args.n_heads * 2,
+            head_dim=args.dim // args.n_heads,
             use_cache=True,
             rms_norm=True,
             return_dict=True,
@@ -67,7 +67,6 @@ class GlobalMamba(nn.Module):
         h = F.dropout(h, p=self.dropout, training=self.training)
 
         outputs = self.model(
-            input_ids=tokens,
             inputs_embeds=h,
             use_cache=cache is not None,
             cache_params=cache,
