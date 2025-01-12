@@ -1,7 +1,8 @@
+from typing import List, Optional, Tuple, Union
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Union, List, Tuple
 from transformers import Mamba2Config, Mamba2Model
 
 
