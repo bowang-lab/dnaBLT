@@ -14,7 +14,7 @@ import torch.nn as nn
 import wandb
 from pydantic import BaseModel, ConfigDict
 
-from bytelatent.distributed import get_is_master
+# from bytelatent.distributed import get_is_master
 
 logger = logging.getLogger()
 

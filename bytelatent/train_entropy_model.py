@@ -13,16 +13,16 @@ import argparse
 import os
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-import torch
-from torch.utils.data import DataLoader, Dataset
-from torch.nn.attention.flex_attention import BlockMask
-from xformers.ops import AttentionBias
-
 import pytorch_lightning as pl
+import torch
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
+from torch.nn.attention.flex_attention import BlockMask
+from torch.utils.data import DataLoader, Dataset
 
 from bytelatent.transformer import LMTransformer, LMTransformerArgs
+
+from xformers.ops import AttentionBias
 
 
 class EntropyModelTrainer(pl.LightningModule):

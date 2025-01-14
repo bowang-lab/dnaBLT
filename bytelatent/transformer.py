@@ -14,7 +14,6 @@ from torch.distributed.tensor.parallel import (
     parallelize_module,
 )
 from torch.nn.attention.flex_attention import BlockMask, create_block_mask
-from xformers.ops import AttentionBias, fmha
 
 from bytelatent.base_transformer import (
     BaseTransformer,
@@ -22,6 +21,8 @@ from bytelatent.base_transformer import (
     RMSNorm,
     cross_entropy,
 )
+
+from xformers.ops import AttentionBias, fmha
 
 
 def create_causal_mask(seqlen, attn_impl, sliding_window):

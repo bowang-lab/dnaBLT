@@ -18,9 +18,6 @@ from itertools import chain
 from typing import List, Optional, Tuple, Union
 
 import torch
-
-# for no recompute ops
-import xformers.ops
 from pydantic import BaseModel, ConfigDict
 from torch import distributed as dist
 from torch.distributed import ReduceOp
@@ -37,6 +34,9 @@ from torch.utils.checkpoint import (
 )
 
 from bytelatent.float8 import convert_linears_to_fp8
+
+# for no recompute ops
+import xformers.ops
 
 logger = logging.getLogger()
 
