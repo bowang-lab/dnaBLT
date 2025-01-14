@@ -23,3 +23,4 @@ rich
 transformers
 mamba-ssm
 causal-conv1d>=1.4.0
+pytorch-lightning
