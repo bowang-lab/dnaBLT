@@ -27,6 +27,96 @@ from bytelatent.transformer import LMTransformer, LMTransformerArgs
 from xformers.ops import AttentionBias
 
 
+class DNAByteDataset(Dataset):
+    """Dataset for byte-level processing."""
+
+    def __init__(
+        self,
+        data_path: str,
+        seq_length: int,
+        stage: str,
+        split: str = "train",
+    ):
+        """Initialize dataset.
+
+        Args:
+            data_path: Path/name of HuggingFace dataset
+            seq_length: Sequence length for model input
+            stage: Stage of the dataset
+            split: Dataset split to use
+        """
+        self.seq_length = seq_length
+        self.dataset = load_dataset(data_path, stage, split)
+
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def __getitem__(self, idx: int) -> torch.Tensor:
+        bytes_data = self.dataset[idx]["text"].encode("utf-8")
+        bytes_array = np.frombuffer(bytes_data, dtype=np.uint8)
+
+        # Truncate or pad to the sequence length
+        if len(bytes_array) > self.seq_length:
+            bytes_array = bytes_array[: self.seq_length]
+        else:
+            bytes_array = np.pad(bytes_array, (0, self.seq_length - len(bytes_array)))
+
+        return torch.from_numpy(bytes_array)
+
+
+class DNAByteDataModule(pl.LightningDataModule):
+    """PyTorch Lightning data module for byte data."""
+
+    def __init__(
+        self,
+        data_path: str,
+        seq_length: int,
+        batch_size: int,
+        num_workers: int,
+    ):
+        super().__init__()
+        self.data_path = data_path
+        self.seq_length = seq_length
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+
+    def setup(self, stage: str = "stage1"):
+        self.train_dataset = DNAByteDataset(
+            self.data_path, self.seq_length, stage, split="train"
+        )
+        self.val_dataset = DNAByteDataset(
+            self.data_path, self.seq_length, stage, split="validation"
+        )
+        self.test_dataset = DNAByteDataset(
+            self.data_path, self.seq_length, stage, split="test"
+        )
+
+    def train_dataloader(self) -> DataLoader:
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            shuffle=True,
+            pin_memory=True,
+        )
+
+    def val_dataloader(self) -> DataLoader:
+        return DataLoader(
+            self.val_dataset,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            pin_memory=True,
+        )
+
+    def test_dataloader(self) -> DataLoader:
+        return DataLoader(
+            self.test_dataset,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            pin_memory=True,
+        )
+
+
 class EntropyModelTrainer(pl.LightningModule):
     """PyTorch Lightning module for training the entropy model."""
 
@@ -129,81 +219,6 @@ class EntropyModelTrainer(pl.LightningModule):
         return entropy
 
 
-class DNAByteDataset(Dataset):
-    """Dataset for byte-level processing."""
-
-    def __init__(
-        self,
-        data_path: str,
-        seq_length: int,
-        stage: str,
-        split: str = "train",
-    ):
-        """Initialize dataset.
-
-        Args:
-            data_path: Path/name of HuggingFace dataset
-            seq_length: Sequence length for model input
-            stage: Stage of the dataset
-            split: Dataset split to use
-        """
-        self.seq_length = seq_length
-        self.dataset = load_dataset(data_path, stage, split)
-
-    def __len__(self) -> int:
-        return len(self.dataset)
-
-    def __getitem__(self, idx: int) -> torch.Tensor:
-        bytes_data = self.dataset[idx]["text"].encode("utf-8")
-        bytes_array = np.frombuffer(bytes_data, dtype=np.uint8)
-
-        # Truncate or pad to the sequence length
-        if len(bytes_array) > self.seq_length:
-            bytes_array = bytes_array[: self.seq_length]
-        else:
-            bytes_array = np.pad(bytes_array, (0, self.seq_length - len(bytes_array)))
-
-        return torch.from_numpy(bytes_array)
-
-
-class ByteDataModule(pl.LightningDataModule):
-    """PyTorch Lightning data module for byte data."""
-
-    def __init__(
-        self, data_path: str, seq_length: int, batch_size: int, num_workers: int = 3
-    ):
-        super().__init__()
-        self.data_path = data_path
-        self.seq_length = seq_length
-        self.batch_size = batch_size
-        self.num_workers = num_workers
-
-    def setup(self, stage: Optional[str] = "stage1"):
-        self.train_dataset = DNAByteDataset(
-            self.data_path, self.seq_length, stage, split="train"
-        )
-        self.val_dataset = DNAByteDataset(
-            self.data_path, self.seq_length, stage, split="validation"
-        )
-
-    def train_dataloader(self) -> DataLoader:
-        return DataLoader(
-            self.train_dataset,
-            batch_size=self.batch_size,
-            num_workers=self.num_workers,
-            shuffle=True,
-            pin_memory=True,
-        )
-
-    def val_dataloader(self) -> DataLoader:
-        return DataLoader(
-            self.val_dataset,
-            batch_size=self.batch_size,
-            num_workers=self.num_workers,
-            pin_memory=True,
-        )
-
-
 def main(args: argparse.Namespace):
     """Main training function.
 
@@ -217,7 +232,13 @@ def main(args: argparse.Namespace):
     torch.set_default_dtype(torch.bfloat16)
 
     model = EntropyModelTrainer(args)
-    data_module = ByteDataModule(args.data_path, args.seq_length, args.batch_size)
+    data_module = DNAByteDataModule(
+        data_path=args.data_path,
+        seq_length=args.seq_length,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+    )
+    data_module.setup(stage="stage1")
 
     callbacks = [
         ModelCheckpoint(
@@ -266,6 +287,7 @@ if __name__ == "__main__":
     # Training arguments
     parser.add_argument("--data_path", type=str, required=True)
     parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--learning_rate", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0.1)
     parser.add_argument("--max_epochs", type=int, default=100)
