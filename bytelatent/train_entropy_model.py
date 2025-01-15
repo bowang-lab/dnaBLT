@@ -9,19 +9,21 @@ The model is trained on raw bytes (values 0-255) and uses causal self-attention
 to predict the next byte in the sequence.
 """
 
-import argparse
 import os
+import argparse
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-import pytorch_lightning as pl
 import torch
+import pytorch_lightning as pl
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 from torch.nn.attention.flex_attention import BlockMask
 from torch.utils.data import DataLoader, Dataset
 
-from bytelatent.transformer import LMTransformer, LMTransformerArgs
+import numpy as np
+from datasets import load_dataset
 
+from bytelatent.transformer import LMTransformer, LMTransformerArgs
 from xformers.ops import AttentionBias
 
 
@@ -127,44 +129,68 @@ class EntropyModelTrainer(pl.LightningModule):
         return entropy
 
 
-class ByteDataset(Dataset):
-    """Dataset for byte-level data."""
+class DNAByteDataset(Dataset):
+    """Dataset for byte-level processing."""
 
-    def __init__(self, data_path: str, seq_length: int):
+    def __init__(
+        self,
+        data_path: str,
+        seq_length: int,
+        stage: str,
+        split: str = "train",
+    ):
+        """Initialize dataset.
+
+        Args:
+            data_path: Path/name of HuggingFace dataset
+            seq_length: Sequence length for model input
+            stage: Stage of the dataset
+            split: Dataset split to use
+        """
         self.seq_length = seq_length
-        # TODO: Implement OpenGenome data loading
-        self.data = torch.randint(0, 256, (1000, seq_length))  # Example data
+        self.dataset = load_dataset(data_path, stage, split)
 
     def __len__(self) -> int:
-        return len(self.data)
+        return len(self.dataset)
 
     def __getitem__(self, idx: int) -> torch.Tensor:
-        return self.data[idx]
+        bytes_data = self.dataset[idx]["text"].encode("utf-8")
+        bytes_array = np.frombuffer(bytes_data, dtype=np.uint8)
+
+        # Truncate or pad to the sequence length
+        if len(bytes_array) > self.seq_length:
+            bytes_array = bytes_array[: self.seq_length]
+        else:
+            bytes_array = np.pad(bytes_array, (0, self.seq_length - len(bytes_array)))
+
+        return torch.from_numpy(bytes_array)
 
 
 class ByteDataModule(pl.LightningDataModule):
     """PyTorch Lightning data module for byte data."""
 
-    def __init__(self, data_path: str, seq_length: int, batch_size: int):
+    def __init__(
+        self, data_path: str, seq_length: int, batch_size: int, num_workers: int = 3
+    ):
         super().__init__()
         self.data_path = data_path
         self.seq_length = seq_length
         self.batch_size = batch_size
+        self.num_workers = num_workers
 
-    def setup(self, stage: Optional[str] = None):
-        if stage == "fit" or stage is None:
-            self.train_dataset = ByteDataset(
-                os.path.join(self.data_path, "train"), self.seq_length
-            )
-            self.val_dataset = ByteDataset(
-                os.path.join(self.data_path, "val"), self.seq_length
-            )
+    def setup(self, stage: Optional[str] = "stage1"):
+        self.train_dataset = DNAByteDataset(
+            self.data_path, self.seq_length, stage, split="train"
+        )
+        self.val_dataset = DNAByteDataset(
+            self.data_path, self.seq_length, stage, split="validation"
+        )
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
-            num_workers=4,
+            num_workers=self.num_workers,
             shuffle=True,
             pin_memory=True,
         )
@@ -173,7 +199,7 @@ class ByteDataModule(pl.LightningDataModule):
         return DataLoader(
             self.val_dataset,
             batch_size=self.batch_size,
-            num_workers=4,
+            num_workers=self.num_workers,
             pin_memory=True,
         )
 
