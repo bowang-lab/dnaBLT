@@ -238,7 +238,7 @@ def main(args: argparse.Namespace):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
     )
-    data_module.setup(stage="stage1")
+    data_module.setup(stage=args.stage)
 
     callbacks = [
         ModelCheckpoint(
@@ -278,7 +278,7 @@ if __name__ == "__main__":
     parser.add_argument("--hidden_dim", type=int, default=512)
     parser.add_argument("--n_layers", type=int, default=14)
     parser.add_argument("--n_heads", type=int, default=8)
-    parser.add_argument("--seq_length", type=int, default=2048)
+    parser.add_argument("--seq_length", type=int, default=8192)
     parser.add_argument("--ffn_dim_multiplier", type=int, default=4)
     parser.add_argument("--sliding_window", type=int, default=512)
     parser.add_argument("--weight_tying", type=bool, default=True)
@@ -300,6 +300,7 @@ if __name__ == "__main__":
     # Other arguments
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--run_name", type=str, default="entropy-model")
+    parser.add_argument("--stage", type=str, default="stage1")
 
     args = parser.parse_args()
     main(args)
