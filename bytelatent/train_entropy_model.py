@@ -84,12 +84,16 @@ class EntropyModelTrainer(pl.LightningModule):
         Returns:
             Loss value
         """
-        x = batch
-        target = torch.roll(x, shifts=-1, dims=-1)
-        target[:, -1] = 0  # mask last target
+        target = torch.roll(batch, shifts=-1, dims=-1)
+        target[:, -1] = 0
 
-        loss = self.forward(x, target=target, attn_impl="sdpa")
-        self.log(f"{stage}_loss", loss, prog_bar=True, sync_dist=True)
+        logits = self.forward(batch, attn_impl="sdpa")
+        loss = self.forward(batch, target=target, attn_impl="sdpa")
+
+        # Calculate and log entropy
+        entropy = self.compute_entropy(logits)
+        self.log(f"{stage}_entropy", entropy.mean(), prog_bar=True, sync_dist=True)
+
         return loss
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
@@ -115,6 +119,12 @@ class EntropyModelTrainer(pl.LightningModule):
             optimizer, T_max=self.hparams.max_epochs
         )
         return [optimizer], [scheduler]
+
+    def compute_entropy(self, logits: torch.Tensor) -> torch.Tensor:
+        """Compute entropy from logits."""
+        probs = torch.softmax(logits, dim=-1)
+        entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1)
+        return entropy
 
 
 class ByteDataset(Dataset):
