@@ -12,9 +12,10 @@ from torch.nn.attention.flex_attention import (
     _mask_mod_signature,
     flex_attention,
 )
-from xformers.ops import AttentionBias, fmha
 
 from bytelatent import probe
+
+from xformers.ops import AttentionBias, fmha
 
 flex_attention_comp = torch.compile(flex_attention)
 

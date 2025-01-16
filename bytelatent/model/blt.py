@@ -16,10 +16,10 @@ from bytelatent.base_transformer import (
 )
 from bytelatent.data.patcher import Patcher, PatcherArgs
 from bytelatent.model.local_models import LocalDecoder, LocalEncoder
+from bytelatent.model.mamba import GlobalMamba
 from bytelatent.model.transformer import GlobalTransformer
 from bytelatent.model.utils import downsample
 from bytelatent.tokenizers.constants import BOE_ID, BOS_ID, EOS_ID, OFFSET, PAD_ID
-from bytelatent.model.mamba import GlobalMamba
 
 
 def attention_flops_per_token(n_layers, seq_len, dim, causal):

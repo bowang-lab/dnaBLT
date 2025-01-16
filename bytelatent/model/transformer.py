@@ -7,7 +7,6 @@ import torch.nn
 import torch.nn as nn
 from torch.nn import functional as F
 from torch.nn.attention.flex_attention import BlockMask
-from xformers.ops import AttentionBias
 
 from bytelatent.base_transformer import (
     BaseTransformer,
@@ -16,6 +15,8 @@ from bytelatent.base_transformer import (
     repeat_kv,
 )
 from bytelatent.model.utils import create_causal_mask
+
+from xformers.ops import AttentionBias
 
 logger = logging.getLogger()
 

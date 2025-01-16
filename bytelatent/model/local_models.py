@@ -8,7 +8,6 @@ import torch.nn
 import torch.nn as nn
 from torch.nn import functional as F
 from torch.nn.attention.flex_attention import BlockMask
-from xformers.ops import AttentionBias
 
 from bytelatent.base_transformer import (
     InitStdFactor,
@@ -19,6 +18,8 @@ from bytelatent.base_transformer import (
 from bytelatent.model.transformer import CrossAttention
 from bytelatent.model.utils import create_causal_mask, downsample
 from bytelatent.tokenizers.blt_tokenizer import BOE_ID
+
+from xformers.ops import AttentionBias
 
 logger = logging.getLogger()
 
