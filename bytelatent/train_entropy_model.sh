@@ -1,15 +1,24 @@
 #!/bin/bash
 #SBATCH -c 5
-#SBATCH --error=%x-%j.err
 #SBATCH --gres=gpu:1
 #SBATCH --job-name=entropy_model
 #SBATCH --mem=32GB
 #SBATCH --output=%x-%j.out
+#SBATCH --error=%x-%j.err
 #SBATCH -p a40
-#SBATCH --time=16:00:00
+#SBATCH --time=8:00:00
+#SBATCH --no-requeue
+
+# Source conda
+source ~/.bashrc
+eval "$(conda shell.bash hook)"
 
 # Activate environment
 conda activate blt
+echo "Using $PYTHON_PATH"
+
+# Set working directory
+cd /h/afallah/dnaBLT
 
 # Set environment variables
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
@@ -19,19 +28,21 @@ export NCCL_DEBUG=INFO
 export PYTHONFAULTHANDLER=1
 
 # Run training
-python train_entropy_model.py \
-    --data_path /path/to/data \
+stdbuf -oL -eL srun python3 bytelatent/train_entropy_model.py \
+    --data_path /projects/llm/open-genome/ \
+    --stage stage1 \
     --hidden_dim 512 \
     --n_layers 14 \
     --n_heads 8 \
     --seq_length 8192 \
     --ffn_dim_multiplier 4 \
     --sliding_window 512 \
-    --batch_size 32 \
-    --num_workers 4 \
-    --learning_rate 1e-4 \
+    --batch_size 8 \
+    --num_workers 3 \
+    --learning_rate 5e-5 \
     --weight_decay 0.1 \
     --max_epochs 10 \
     --grad_clip 1.0 \
-    --run_name "entropy_model_$(date +%Y%m%d_%H%M%S)"
-    --stage stage1
+    --strategy deepspeed_stage_3 \
+    --run_name "entropy_model_$(date +%Y%m%d_%H%M%S)" \
+    --seed 23
