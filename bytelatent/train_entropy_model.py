@@ -81,13 +81,13 @@ class DNAByteDataModule:
 
     def setup(self, stage: str = "stage1"):
         self.train_dataset = DNAByteDataset(
-            self.data_path, self.seq_length, stage, "validation"
+            self.data_path, self.seq_length, stage, "train"
         )
         self.val_dataset = DNAByteDataset(
             self.data_path, self.seq_length, stage, "validation"
         )
         self.test_dataset = DNAByteDataset(
-            self.data_path, self.seq_length, stage, "validation"
+            self.data_path, self.seq_length, stage, "test"
         )
 
     def train_dataloader(self) -> DataLoader:
