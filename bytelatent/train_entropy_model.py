@@ -9,22 +9,21 @@ The model is trained on raw bytes (values 0-255) and uses causal self-attention
 to predict the next byte in the sequence.
 """
 
-import os
 import argparse
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Optional, Tuple, Union
 
-import torch
+import numpy as np
 import pytorch_lightning as pl
+import torch
+from datasets import load_dataset
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 from torch.nn.attention.flex_attention import BlockMask
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader, Dataset
-from torch.optim.lr_scheduler import SequentialLR, CosineAnnealingLR, LinearLR
-
-import numpy as np
-from datasets import load_dataset
 
 from bytelatent.transformer import LMTransformer, LMTransformerArgs
+
 from xformers.ops import AttentionBias
 
 

@@ -7,6 +7,7 @@ import numpy as np
 import yaml
 from pydantic import BaseModel, ConfigDict
 
+from bytelatent.byte_tokenizers.build_tokenizer import TokenizerArgs
 from bytelatent.checkpoint import CheckpointArgs
 from bytelatent.data.data_types import Batch
 from bytelatent.data.iterators.abstract_iterator import StatefulIterator
@@ -29,7 +30,6 @@ from bytelatent.metrics import LoggingArgs
 from bytelatent.model.blt import ByteLatentTransformerArgs
 from bytelatent.optim import OptimArgs
 from bytelatent.profiling import ProfilerArgs
-from bytelatent.byte_tokenizers.build_tokenizer import TokenizerArgs
 
 logger = logging.getLogger()
 

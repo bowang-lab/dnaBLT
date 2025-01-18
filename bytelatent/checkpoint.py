@@ -88,7 +88,7 @@ def load_from_checkpoint(
 ):
     if not (Path(ckpt_dir) / ".metadata").exists():
         raise ValueError(
-            f"Please convert the checkpoint distcp format using `torch.distributed.checkpoint.format_utils.torch_save_to_dcp` before loading it"
+            "Please convert the checkpoint distcp format using `torch.distributed.checkpoint.format_utils.torch_save_to_dcp` before loading it"
         )
 
     state_dict = {}

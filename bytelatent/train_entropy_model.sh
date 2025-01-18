@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH -c 6
+#SBATCH -c 4
 #SBATCH --gres=gpu:1
 #SBATCH --job-name=entropy_model
-#SBATCH --mem=32GB
+#SBATCH --mem=16GB
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
 #SBATCH -p a40

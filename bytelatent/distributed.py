@@ -12,7 +12,6 @@ import socket
 import subprocess
 import sys
 import tempfile
-from dataclasses import asdict, dataclass
 from functools import lru_cache, partial, reduce
 from itertools import chain
 from typing import List, Optional, Tuple, Union
@@ -27,7 +26,6 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     checkpoint_wrapper,
 )
 from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
-from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.checkpoint import (
     CheckpointPolicy,
     create_selective_checkpoint_contexts,
@@ -36,7 +34,6 @@ from torch.utils.checkpoint import (
 from bytelatent.float8 import convert_linears_to_fp8
 
 # for no recompute ops
-import xformers.ops
 
 logger = logging.getLogger()
 
@@ -268,7 +265,7 @@ def setup_torch_distributed(dist_args):
     if dist_args.matmul_allow_tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
         logger.warning(
-            f"WARNING: Setting torch.backends.matmul.allow_tf32 to True. This is faster but less accurate."
+            "WARNING: Setting torch.backends.matmul.allow_tf32 to True. This is faster but less accurate."
         )
     torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = (
         dist_args.allow_bf16_reduced_precision_reduction
