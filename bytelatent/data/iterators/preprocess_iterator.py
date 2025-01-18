@@ -12,8 +12,8 @@ from bytelatent.data.iterators.arrow_iterator import (
 )
 from bytelatent.data.iterators.looping_iterator import LoopingIteratorState
 from bytelatent.data.patcher import Patcher, PatcherArgs, PatchingModeEnum
-from bytelatent.tokenizers.blt_tokenizer import BltTokenizer
-from bytelatent.tokenizers.build_tokenizer import TokenizerArgs
+from bytelatent.byte_tokenizers.blt_tokenizer import BltTokenizer
+from bytelatent.byte_tokenizers.build_tokenizer import TokenizerArgs
 
 
 class PreprocessIteratorState(BaseModel, IteratorState):

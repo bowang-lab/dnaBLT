@@ -67,13 +67,15 @@ class LMTransformerArgs(BaseTransformerArgs):
 
     sliding_window: int | None = None
 
+    return_dict: bool = False
+
 
 class LMTransformer(BaseTransformer):
     def __init__(self, args: LMTransformerArgs):
         super().__init__(args)
         self.weight_tying = args.weight_tying
         self.sliding_window = args.sliding_window
-
+        self.return_dict = args.return_dict
         assert args.vocab_size > 0
 
         self.tok_embeddings = torch.nn.Embedding(args.vocab_size, args.dim)
@@ -86,8 +88,8 @@ class LMTransformer(BaseTransformer):
             bias=False,
         )
 
-        if args.weight_tying:
-            self.output.weight = self.embeddings.tok_embeddings.weight
+        # if args.weight_tying:
+        #     self.output.weight = self.embeddings.tok_embeddings.weight
 
     def forward(
         self,
@@ -109,10 +111,16 @@ class LMTransformer(BaseTransformer):
         h = super().forward(h, tok_idx=tok_idx, mask=mask, attn_impl=attn_impl)
 
         logits = self.output(self.norm(h))
+
         if target is not None:
-            return cross_entropy(logits, target)
-        else:
-            return logits
+            loss = cross_entropy(logits, target)
+
+            if self.return_dict:
+                return {"logits": logits, "loss": loss}
+            else:
+                return loss
+
+        return logits
 
     def reset_parameters(self, init_std=None):
         # Either use fixed base std or sqrt model dim

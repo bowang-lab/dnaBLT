@@ -40,7 +40,7 @@ data:
   load_async: true
   tokenizer:
     name: tiktoken
-    path: tokenizers/cl_toplang_128k.tiktoken
+    path: byte_tokenizers/cl_toplang_128k.tiktoken
 
 profiling:
   run: true
