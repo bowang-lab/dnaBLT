@@ -19,6 +19,7 @@ from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.loggers import WandbLogger
 from torch.nn.attention.flex_attention import BlockMask
 from torch.utils.data import DataLoader, Dataset
+from torch.optim.lr_scheduler import SequentialLR, CosineAnnealingLR, LinearLR
 
 import numpy as np
 from datasets import load_dataset
@@ -46,7 +47,7 @@ class DNAByteDataset(Dataset):
             split: Dataset split to use
         """
         self.seq_length = seq_length
-        self.dataset = load_dataset(data_path, stage, split)
+        self.dataset = load_dataset(data_path, stage)[split]
 
     def __len__(self) -> int:
         return len(self.dataset)
@@ -61,11 +62,11 @@ class DNAByteDataset(Dataset):
         else:
             bytes_array = np.pad(bytes_array, (0, self.seq_length - len(bytes_array)))
 
-        return torch.from_numpy(bytes_array)
+        return torch.from_numpy(bytes_array.copy()).long()
 
 
-class DNAByteDataModule(pl.LightningDataModule):
-    """PyTorch Lightning data module for byte data."""
+class DNAByteDataModule:
+    """Data module for byte data."""
 
     def __init__(
         self,
@@ -74,7 +75,6 @@ class DNAByteDataModule(pl.LightningDataModule):
         batch_size: int,
         num_workers: int,
     ):
-        super().__init__()
         self.data_path = data_path
         self.seq_length = seq_length
         self.batch_size = batch_size
@@ -82,13 +82,13 @@ class DNAByteDataModule(pl.LightningDataModule):
 
     def setup(self, stage: str = "stage1"):
         self.train_dataset = DNAByteDataset(
-            self.data_path, self.seq_length, stage, split="train"
+            self.data_path, self.seq_length, stage, "train"
         )
         self.val_dataset = DNAByteDataset(
-            self.data_path, self.seq_length, stage, split="validation"
+            self.data_path, self.seq_length, stage, "validation"
         )
         self.test_dataset = DNAByteDataset(
-            self.data_path, self.seq_length, stage, split="test"
+            self.data_path, self.seq_length, stage, "test"
         )
 
     def train_dataloader(self) -> DataLoader:
@@ -138,9 +138,9 @@ class EntropyModelTrainer(pl.LightningModule):
             ffn_dim_multiplier=args.ffn_dim_multiplier,
             vocab_size=256,  # byte-level, so vocab size is 256
             sliding_window=args.sliding_window,
-            weight_tying=args.weight_tying,
             seed=args.seed,
             norm_eps=args.norm_eps,
+            return_dict=True,
         )
         self.model = LMTransformer(model_args)
 
@@ -179,14 +179,14 @@ class EntropyModelTrainer(pl.LightningModule):
         target = torch.roll(batch, shifts=-1, dims=-1)
         target[:, -1] = 0
 
-        logits = self.forward(batch, attn_impl="sdpa")
-        loss = self.forward(batch, target=target, attn_impl="sdpa")
+        outputs = self.forward(batch, target=target, attn_impl="sdpa")
 
         # Calculate and log entropy
-        entropy = self.compute_entropy(logits)
+        entropy = self.compute_entropy(outputs["logits"])
         self.log(f"{stage}_entropy", entropy.mean(), prog_bar=True, sync_dist=True)
+        self.log(f"{stage}_loss", outputs["loss"], prog_bar=True, sync_dist=True)
 
-        return loss
+        return outputs["loss"]
 
     def training_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
         """Training step."""
@@ -196,21 +196,42 @@ class EntropyModelTrainer(pl.LightningModule):
         """Validation step."""
         return self._step(batch, "val")
 
+    def test_step(self, batch: torch.Tensor, batch_idx: int) -> torch.Tensor:
+        """Test step."""
+        return self._step(batch, "test")
+
     def configure_optimizers(
         self,
-    ) -> Tuple[
-        List[torch.optim.Optimizer], List[torch.optim.lr_scheduler._LRScheduler]
-    ]:
-        """Configure optimizers and learning rate schedulers."""
+    ) -> Tuple[list[Any], list[dict[str, SequentialLR | str]]]:
+        """Configure optimizers and learning rate scheduler."""
         optimizer = torch.optim.AdamW(
             self.parameters(),
             lr=self.hparams.learning_rate,
             weight_decay=self.hparams.weight_decay,
         )
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=self.hparams.max_epochs
+
+        n_steps = self.trainer.estimated_stepping_batches
+        n_warmup_steps = int(0.1 * n_steps)
+        n_decay_steps = int(0.9 * n_steps)
+
+        warmup = LinearLR(
+            optimizer,
+            start_factor=0.01,
+            end_factor=1.0,
+            total_iters=n_warmup_steps,
         )
-        return [optimizer], [scheduler]
+        decay = CosineAnnealingLR(
+            optimizer,
+            T_max=n_decay_steps,
+            eta_min=self.hparams.learning_rate * 0.01,
+        )
+        scheduler = SequentialLR(
+            optimizer=optimizer,
+            schedulers=[warmup, decay],
+            milestones=[n_warmup_steps],
+        )
+
+        return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
 
     def compute_entropy(self, logits: torch.Tensor) -> torch.Tensor:
         """Compute entropy from logits."""
@@ -239,6 +260,9 @@ def main(args: argparse.Namespace):
         num_workers=args.num_workers,
     )
     data_module.setup(stage=args.stage)
+    train_loader = data_module.train_dataloader()
+    val_loader = data_module.val_dataloader()
+    test_loader = data_module.test_dataloader()
 
     callbacks = [
         ModelCheckpoint(
@@ -268,7 +292,8 @@ def main(args: argparse.Namespace):
         enable_model_summary=True,
     )
 
-    trainer.fit(model, data_module)
+    trainer.fit(model, train_loader, val_loader)
+    trainer.test(model, test_loader)
 
 
 if __name__ == "__main__":
