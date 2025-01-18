@@ -82,13 +82,13 @@ class DNAByteDataModule:
 
     def setup(self, stage: str = "stage1"):
         self.train_dataset = DNAByteDataset(
-            self.data_path, self.seq_length, stage, "train"
+            self.data_path, self.seq_length, stage, "validation"
         )
         self.val_dataset = DNAByteDataset(
             self.data_path, self.seq_length, stage, "validation"
         )
         self.test_dataset = DNAByteDataset(
-            self.data_path, self.seq_length, stage, "test"
+            self.data_path, self.seq_length, stage, "validation"
         )
 
     def train_dataloader(self) -> DataLoader:
@@ -251,6 +251,7 @@ def main(args: argparse.Namespace):
     """
     pl.seed_everything(args.seed)
     torch.set_default_dtype(torch.bfloat16)
+    torch.set_float32_matmul_precision("medium")
 
     model = EntropyModelTrainer(args)
     data_module = DNAByteDataModule(
