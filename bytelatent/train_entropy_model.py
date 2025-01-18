@@ -268,9 +268,11 @@ def main(args: argparse.Namespace):
     callbacks = [
         ModelCheckpoint(
             dirpath="checkpoints",
-            filename="entropy-{epoch:02d}-{val_loss:.2f}",
+            filename="entropy-{step:07d}-{val_loss:.2f}",
             monitor="val_loss",
             mode="min",
+            save_top_k=3,
+            every_n_train_steps=1000,
         ),
         LearningRateMonitor(logging_interval="step"),
     ]
