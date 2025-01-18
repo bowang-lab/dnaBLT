@@ -15,9 +15,9 @@ from bytelatent.base_transformer import (
     RotaryEmbedding,
     TransformerBlock,
 )
+from bytelatent.byte_tokenizers.blt_tokenizer import BOE_ID
 from bytelatent.model.transformer import CrossAttention
 from bytelatent.model.utils import create_causal_mask, downsample
-from bytelatent.tokenizers.blt_tokenizer import BOE_ID
 
 from xformers.ops import AttentionBias
 

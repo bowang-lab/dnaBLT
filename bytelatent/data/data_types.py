@@ -1,5 +1,4 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-import json
 from dataclasses import dataclass
 from typing import Any, Iterator
 

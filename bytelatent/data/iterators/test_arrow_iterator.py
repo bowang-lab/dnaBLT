@@ -1,5 +1,4 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-import numpy as np
 import pyarrow as pa
 
 # pyarrow needs the initialization from this import

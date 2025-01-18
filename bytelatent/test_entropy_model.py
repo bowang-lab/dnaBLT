@@ -3,12 +3,12 @@ import os
 
 import torch
 
+from bytelatent.byte_tokenizers.build_tokenizer import TokenizerArgs
 from bytelatent.constants import BLT_DATA
 from bytelatent.data.iterators.arrow_iterator import ArrowFileIteratorState
 from bytelatent.data.iterators.preprocess_iterator import PreprocessIterator
 from bytelatent.data.patcher import PatcherArgs, PatchingModeEnum, entropy
 from bytelatent.entropy_model import load_entropy_model
-from bytelatent.tokenizers.build_tokenizer import TokenizerArgs
 
 ENTROPY_MODEL = "transformer_100m"
 ARROW_TEST_DATA = str(BLT_DATA / "stackexchange.chunk.00.jsonl.shard_00.arrow")

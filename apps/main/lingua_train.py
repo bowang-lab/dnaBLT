@@ -7,14 +7,13 @@ import os
 import sys
 from contextlib import ExitStack
 from copy import deepcopy
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from timeit import default_timer as timer
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import torch
 import torch.distributed
-import wandb
 from lingua.args import dataclass_from_dict, dump_config, flatten_dict
 from lingua.data import (
     DataArgs,
@@ -69,6 +68,7 @@ from bytelatent.transformer import (
     tp_parallelize,
 )
 
+import wandb
 import xformers.profiler
 
 logger = logging.getLogger()

@@ -8,12 +8,11 @@ import torch
 from pydantic import BaseModel
 from torch.nn import functional as F
 
+# from src.slurm import get_local_rank
+from bytelatent.byte_tokenizers.blt_tokenizer import BPE_ID, OFFSET
+from bytelatent.byte_tokenizers.constants import BPE_ID, OFFSET
 from bytelatent.distributed import get_local_rank
 from bytelatent.entropy_model import load_entropy_model
-
-# from src.slurm import get_local_rank
-from bytelatent.tokenizers.blt_tokenizer import BPE_ID, OFFSET
-from bytelatent.tokenizers.constants import BPE_ID, OFFSET
 
 
 class PatchingModeEnum(str, Enum):

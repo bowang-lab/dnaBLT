@@ -7,12 +7,12 @@ import os
 from pathlib import Path
 
 import torch.distributed
-import wandb
 from pydantic import BaseModel
 from torch.profiler.profiler import profile
 
 from bytelatent.distributed import get_is_master
 
+import wandb
 import xformers.profiler
 from xformers.profiler import MemSnapshotsProfiler, PyTorchProfiler
 
