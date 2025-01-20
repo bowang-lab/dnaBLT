@@ -9,6 +9,7 @@ The model is trained on raw bytes (values 0-255) and uses causal self-attention
 to predict the next byte in the sequence.
 """
 
+import os
 import argparse
 from typing import Any, Optional, Tuple, Union
 
@@ -21,6 +22,7 @@ from pytorch_lightning.loggers import WandbLogger
 from torch.nn.attention.flex_attention import BlockMask
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader, Dataset
+from datasets import config
 
 from bytelatent.transformer import LMTransformer, LMTransformerArgs
 
@@ -252,6 +254,9 @@ def main(args: argparse.Namespace):
     torch.set_default_dtype(torch.bfloat16)
     torch.set_float32_matmul_precision("medium")
 
+    os.environ["HF_DATASETS_CACHE"] = args.data_cache_dir
+    config.HF_DATASETS_CACHE = args.data_cache_dir
+
     model = EntropyModelTrainer(args)
     data_module = DNAByteDataModule(
         data_path=args.data_path,
@@ -325,6 +330,7 @@ if __name__ == "__main__":
     parser.add_argument("--strategy", type=str, default="ddp")
 
     # Other arguments
+    parser.add_argument("--data_cache_dir", type=str)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--run_name", type=str, default="entropy-model")
     parser.add_argument("--stage", type=str, default="stage1")
