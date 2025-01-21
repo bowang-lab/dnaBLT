@@ -295,7 +295,7 @@ def main(args: argparse.Namespace):
             monitor="train_loss",
             mode="min",
             save_top_k=3,
-            every_n_train_steps=1000,
+            every_n_train_steps=1,
         ),
         LearningRateMonitor(logging_interval="step"),
     ]
@@ -319,7 +319,6 @@ def main(args: argparse.Namespace):
         log_every_n_steps=25,
     )
 
-    trainer.save_checkpoint(f"{args.checkpoint_dir}/entropy-initial.ckpt")
     trainer.fit(model, train_loader, val_loader)
     trainer.test(model, test_loader)
 
