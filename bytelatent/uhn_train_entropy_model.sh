@@ -9,7 +9,6 @@
 #SBATCH --mem=400G
 #SBATCH --reservation=h100
 #SBATCH -N 1
-#SBATCH --ntasks-per-node=1
 
 # Source conda
 source ~/.bashrc
