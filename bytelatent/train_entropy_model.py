@@ -198,7 +198,7 @@ class EntropyModelTrainer(pl.LightningModule):
         target = torch.roll(batch, shifts=-1, dims=-1)
         target[:, -1] = 0
 
-        outputs = self.forward(batch, target=target, attn_impl="sdpa")
+        outputs = self.forward(batch, target=target, attn_impl="xformers")
 
         # Calculate and log entropy
         entropy = self.compute_entropy(outputs["logits"])
