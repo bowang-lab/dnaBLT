@@ -295,7 +295,7 @@ def main(args: argparse.Namespace):
             monitor="train_loss",
             mode="min",
             save_top_k=3,
-            every_n_train_steps=1,
+            every_n_train_steps=1000,
         ),
         LearningRateMonitor(logging_interval="step"),
     ]
