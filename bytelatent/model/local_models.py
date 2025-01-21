@@ -20,7 +20,7 @@ from bytelatent.base_transformer import (
 )
 from bytelatent.model.latent_transformer import CrossAttention
 from bytelatent.model.utils import create_causal_mask, downsample
-from bytelatent.tokenizers.blt_tokenizer import BOE_ID
+from bytelatent.blt_tokenizers.blt_tokenizer import BOE_ID
 
 logger = logging.getLogger()
 

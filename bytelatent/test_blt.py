@@ -26,7 +26,7 @@ from bytelatent.model.blt import (
 from bytelatent.model.latent_transformer import CrossAttention
 from bytelatent.model.utils import create_causal_mask
 from bytelatent.optim import OptimArgs, build_optimizer
-from bytelatent.tokenizers.constants import EOS_ID
+from bytelatent.blt_tokenizers.constants import EOS_ID
 from bytelatent.train import compute_loss
 
 

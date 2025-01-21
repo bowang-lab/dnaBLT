@@ -12,7 +12,7 @@ from rich.progress import Progress, TextColumn
 from bytelatent.data.file_util import get_fs
 from bytelatent.data.patcher import calculate_entropies
 from bytelatent.entropy_model import load_entropy_model
-from bytelatent.tokenizers.build_tokenizer import TokenizerArgs
+from bytelatent.blt_tokenizers.build_tokenizer import TokenizerArgs
 
 
 def get_id_from_doc(doc: dict) -> int:

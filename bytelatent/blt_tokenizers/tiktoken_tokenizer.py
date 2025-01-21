@@ -3,7 +3,7 @@ import logging
 from copy import copy
 from pathlib import Path
 
-from bytelatent.tokenizers.abstract_tokenizer import Tokenizer
+from bytelatent.blt_tokenizers.abstract_tokenizer import Tokenizer
 
 try:
     import tiktoken

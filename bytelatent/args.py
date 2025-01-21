@@ -29,7 +29,7 @@ from bytelatent.metrics import LoggingArgs
 from bytelatent.model.blt import ByteLatentTransformerArgs
 from bytelatent.optim import OptimArgs
 from bytelatent.profiling import ProfilerArgs
-from bytelatent.tokenizers.build_tokenizer import TokenizerArgs
+from bytelatent.blt_tokenizers.build_tokenizer import TokenizerArgs
 from bytelatent.transformer import LMTransformerArgs
 
 logger = logging.getLogger()

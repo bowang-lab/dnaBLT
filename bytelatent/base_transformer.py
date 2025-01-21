@@ -15,7 +15,7 @@ from torch.nn.attention.flex_attention import (
 from xformers.ops import AttentionBias, fmha
 
 from bytelatent import probe
-from bytelatent.tokenizers.constants import EOS_ID
+from bytelatent.blt_tokenizers.constants import EOS_ID
 
 if int(os.environ.get("BLT_ALLOW_MISSING_FLEX_ATTENTION", False)) == 0:
     flex_attention_comp = torch.compile(flex_attention)

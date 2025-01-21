@@ -9,7 +9,7 @@ try:
 except ImportError:
     has_sp = False
 
-from bytelatent.tokenizers.abstract_tokenizer import Tokenizer
+from bytelatent.blt_tokenizers.abstract_tokenizer import Tokenizer
 
 logger = logging.getLogger(__name__)
 

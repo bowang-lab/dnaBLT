@@ -1,8 +1,8 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 import re
 
-from bytelatent.tokenizers.abstract_tokenizer import Tokenizer
-from bytelatent.tokenizers.constants import (
+from bytelatent.blt_tokenizers.abstract_tokenizer import Tokenizer
+from bytelatent.blt_tokenizers.constants import (
     BOE_ID,
     BOS_ID,
     BPE_ID,
@@ -11,7 +11,7 @@ from bytelatent.tokenizers.constants import (
     OFFSET,
     PAD_ID,
 )
-from bytelatent.tokenizers.sentence_piece_tokenizer import SentencePieceTokenizer
+from bytelatent.blt_tokenizers.sentence_piece_tokenizer import SentencePieceTokenizer
 
 
 def convert_to_bytes(s):

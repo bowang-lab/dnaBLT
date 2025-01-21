@@ -7,7 +7,7 @@ from bytelatent.data.data_types import BltExample
 from bytelatent.data.iterators.abstract_iterator import IteratorState, StatefulIterator
 from bytelatent.data.iterators.preprocess_iterator import PreprocessIterator
 from bytelatent.data.patcher import PatcherArgs, PatchingModeEnum
-from bytelatent.tokenizers.build_tokenizer import TokenizerArgs
+from bytelatent.blt_tokenizers.build_tokenizer import TokenizerArgs
 
 
 class BltTestIteratorState(BaseModel, IteratorState):
