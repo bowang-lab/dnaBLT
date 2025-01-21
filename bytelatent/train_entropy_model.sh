@@ -56,5 +56,6 @@ stdbuf -oL -eL srun python3 bytelatent/train_entropy_model.py \
     --devices 4 \
     --strategy deepspeed_stage_3 \
     --run_name "entropy_model_$(date +%Y%m%d_%H%M%S)" \
-    --seed 23
+    --seed 23 \
+    --join_stage_path False \
 

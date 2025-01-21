@@ -39,6 +39,7 @@ class DNAByteDataset(Dataset):
         seq_length: int,
         stage: str,
         split: str = "train",
+        join_stage_path: bool = False,
     ):
         """Initialize dataset.
 
@@ -47,9 +48,13 @@ class DNAByteDataset(Dataset):
             seq_length: Sequence length for model input
             stage: Stage of the dataset
             split: Dataset split to use
+            join_stage_path: Whether to join the stage path to the data path
         """
         self.seq_length = seq_length
-        self.dataset = load_dataset(data_path, stage)[split]
+        if join_stage_path:
+            self.dataset = load_dataset(f"{data_path}/{stage}")[split]
+        else:
+            self.dataset = load_dataset(data_path, stage)[split]
 
     def __len__(self) -> int:
         return len(self.dataset)
@@ -84,13 +89,25 @@ class DNAByteDataModule:
 
     def setup(self, stage: str = "stage1"):
         self.train_dataset = DNAByteDataset(
-            self.data_path, self.seq_length, stage, "train"
+            self.data_path,
+            self.seq_length,
+            stage,
+            "train",
+            join_stage_path=args.join_stage_path,
         )
         self.val_dataset = DNAByteDataset(
-            self.data_path, self.seq_length, stage, "validation"
+            self.data_path,
+            self.seq_length,
+            stage,
+            "validation",
+            join_stage_path=args.join_stage_path,
         )
         self.test_dataset = DNAByteDataset(
-            self.data_path, self.seq_length, stage, "test"
+            self.data_path,
+            self.seq_length,
+            stage,
+            "test",
+            join_stage_path=args.join_stage_path,
         )
 
     def train_dataloader(self) -> DataLoader:
@@ -337,6 +354,7 @@ if __name__ == "__main__":
     parser.add_argument("--run_name", type=str, default="entropy-model")
     parser.add_argument("--stage", type=str, default="stage1")
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
+    parser.add_argument("--join_stage_path", type=bool, default=False)
 
     args = parser.parse_args()
     main(args)
