@@ -6,9 +6,9 @@
 #SBATCH --error=%x-%j.err
 #SBATCH -t 3-00:0:0
 #SBATCH -p gpu_bwanggroup
-#SBATCH --mem=500G
+#SBATCH --mem=400G
 #SBATCH --reservation=h100
-#SBATCH -N 1 # node
+#SBATCH -N 1
 #SBATCH --ntasks-per-node=1
 
 # Source conda
@@ -20,8 +20,11 @@ eval "$(conda shell.bash hook)"
 conda activate blt
 echo "Using $PYTHON_PATH"
 
-# Set working directory
-cd /h/afallah/dnaBLT
+# Set directories
+home_dir="/cluster/home/t136151uhn/dnaBLT"
+data_path="/cluster/projects/bwanggroup/open-genome"
+output_path="/cluster/projects/bwanggroup/dnaBLT"
+cd $home_dir
 
 # Set the master node address (first node in the allocation)
 export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
@@ -61,18 +64,14 @@ echo "GPUs per node: $SLURM_GPUS_ON_NODE"
 
 # Set environment variables
 export PYTHONPATH="${PYTHONPATH}:$(pwd)"
-export CUDA_VISIBLE_DEVICES=0
-export CUBLAS_WORKSPACE_CONFIG=:4096:2
 export NCCL_DEBUG=INFO
 export PYTHONFAULTHANDLER=1
 
-# Set paths
-data_path = /cluster/projects/bwanggroup/open-genome
-output_path = /cluster/projects/bwanggroup/dnaBLT
 
 # Run training
 stdbuf -oL -eL srun --exclusive python3 bytelatent/train_entropy_model.py \
-    --data_path data_path \
+    --data_path $data_path \
+    --checkpoint_dir $output_path/checkpoints \
     --stage stage1 \
     --hidden_dim 512 \
     --n_layers 14 \
@@ -86,7 +85,7 @@ stdbuf -oL -eL srun --exclusive python3 bytelatent/train_entropy_model.py \
     --weight_decay 0.1 \
     --max_epochs 2 \
     --grad_clip 1.0 \
-    --grad_accum 4 \
+    --grad_accum 2 \
     --devices 4 \
     --strategy deepspeed_stage_3 \
     --run_name "entropy_model_$(date +%Y%m%d_%H%M%S)" \
