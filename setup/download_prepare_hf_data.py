@@ -5,6 +5,7 @@ import os
 import subprocess
 import time
 
+import fsspec
 import requests
 from huggingface_hub import snapshot_download
 
@@ -38,10 +39,20 @@ def download_dataset(repo_id, local_dir, allow_patterns):
     print(f"Dataset downloaded to {local_dir}")
 
 
-def parquet_to_jsonl(dataset, work_dir, src_dir, tgt_dir, ntasks=64):
+def parquet_to_jsonl(
+    dataset, work_dir, src_dir, tgt_dir, ntasks=64, s3_profile: str | None = None
+):
     from datatrove.executor import LocalPipelineExecutor
     from datatrove.pipeline.readers import ParquetReader
     from datatrove.pipeline.writers import JsonlWriter
+
+    if tgt_dir.startswith("s3//"):
+        if s3_profile is None:
+            out_spec = tgt_dir
+        else:
+            out_spec = (tgt_dir, fsspec.filesystem("s3", profile=s3_profile))
+    else:
+        out_spec = tgt_dir
 
     pipeline_exec = LocalPipelineExecutor(
         pipeline=[
@@ -52,7 +63,7 @@ def parquet_to_jsonl(dataset, work_dir, src_dir, tgt_dir, ntasks=64):
                 glob_pattern="**/*.parquet",
             ),
             JsonlWriter(
-                tgt_dir,
+                out_spec,
                 output_filename=dataset + ".chunk.${rank}.jsonl",
                 compression=None,
             ),
@@ -77,7 +88,7 @@ def setup_terashuf(work_dir):
     return terashuf_dir
 
 
-def main(dataset, memory, data_dir, seed=42, nchunks=32):
+def main(dataset, memory, data_dir, seed=42, nchunks=32, s3_profile: str | None = None):
     # Configuration
     repo_id = {
         "fineweb_edu": "HuggingFaceFW/fineweb-edu",

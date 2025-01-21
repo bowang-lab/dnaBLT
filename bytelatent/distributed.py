@@ -1,5 +1,4 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-
 import atexit
 import contextlib
 import logging
@@ -17,6 +16,9 @@ from itertools import chain
 from typing import List, Optional, Tuple, Union
 
 import torch
+
+# for no recompute ops
+import xformers.ops
 from pydantic import BaseModel, ConfigDict
 from torch import distributed as dist
 from torch.distributed import ReduceOp
@@ -26,14 +28,13 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     checkpoint_wrapper,
 )
 from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.checkpoint import (
     CheckpointPolicy,
     create_selective_checkpoint_contexts,
 )
 
 from bytelatent.float8 import convert_linears_to_fp8
-
-# for no recompute ops
 
 logger = logging.getLogger()
 
@@ -45,8 +46,12 @@ default_no_recompute_ops = {
     torch.ops.aten._scaled_dot_product_flash_attention.default,
     torch.ops.c10d_functional.reduce_scatter_tensor.default,
     torch.ops.xformers_flash.flash_fwd.default,
-    torch.ops.xformers.efficient_attention_forward_cutlass.default,
 }
+
+if int(os.environ.get("BLT_ALLOW_MISSING_FLEX_ATTENTION", False)) == 0:
+    default_no_recompute_ops.add(
+        torch.ops.xformers.efficient_attention_forward_cutlass.default
+    )
 
 
 class DistributedArgs(BaseModel):
@@ -265,7 +270,7 @@ def setup_torch_distributed(dist_args):
     if dist_args.matmul_allow_tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
         logger.warning(
-            "WARNING: Setting torch.backends.matmul.allow_tf32 to True. This is faster but less accurate."
+            f"WARNING: Setting torch.backends.matmul.allow_tf32 to True. This is faster but less accurate."
         )
     torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = (
         dist_args.allow_bf16_reduced_precision_reduction

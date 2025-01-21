@@ -23,9 +23,10 @@ from bytelatent.model.blt import (
     init_embeddings,
     patch_ids_from_lengths,
 )
-from bytelatent.model.transformer import CrossAttention
+from bytelatent.model.latent_transformer import CrossAttention
 from bytelatent.model.utils import create_causal_mask
 from bytelatent.optim import OptimArgs, build_optimizer
+from bytelatent.tokenizers.constants import EOS_ID
 from bytelatent.train import compute_loss
 
 
@@ -51,7 +52,7 @@ def batch_to_tensors_and_gpu(batch):
 
 
 def fake_batch():
-    batch_dict = torch.load(os.path.join(BLT_DATA, "test_batch.pt"))
+    batch_dict = torch.load(os.path.join(BLT_DATA, "test_batch.pt"), weights_only=False)
     del batch_dict["x2"]
     del batch_dict["y2"]
     del batch_dict["src_names"]
@@ -98,18 +99,17 @@ def create_args(cross_attention=False):
         recompute_attn=False,
         custom_bwd=False,
         layer_ckpt="none",
-        efficient_attn="sdpa",
-        patch_only_encoder=False,
-        patch_only_decoder=False,
         use_local_encoder_transformer=True,
         init_use_gaussian=True,
         init_use_depth="current",
         attn_bias_type="block_causal",
+        attn_impl="xformers",
         alpha_depth="disabled",
         max_length=256,
         local_attention_window_len=512,
         max_seqlen=12288,
         downsampling_by_pooling="max",
+        eos_id=EOS_ID,
     )
     return transformer_args
 
@@ -341,10 +341,15 @@ class TestByteLatentTransformer:
         model = ByteLatentTransformer(args)
         assert model is not None
 
-    @pytest.mark.parametrize("attn_type", ["fmha", "sdpa"])
-    def test_blt_transformer_forward(self, attn_type):
+    @pytest.mark.parametrize("attn_impl", ["sdpa", "xformers"])
+    def test_blt_transformer_forward(self, attn_impl):
         args = create_args()
-        args = args.model_copy(update=dict(efficient_attn=attn_type))
+        if attn_impl == "sdpa":
+            os.environ["BLT_SUPPRESS_ATTN_ERROR"] = "1"
+        else:
+            os.environ["BLT_SUPPRESS_ATTN_ERROR"] = "0"
+
+        args = args.model_copy(update=dict(attn_impl=attn_impl))
         model = ByteLatentTransformer(args)
         model = model.cuda()
         batch = fake_batch()
@@ -393,7 +398,9 @@ class TestByteLatentTransformer:
             n_kv_heads=4,
             norm_eps=1e-6,
         ).to("cuda")
-        mask = create_causal_mask(x.shape[1], "flex_attention", sliding_window=None)
+        mask = create_causal_mask(
+            x.shape[1], "flex_attention", None, sliding_window=None
+        )
         output = cross_attention(x, kv, mask)
         assert output is not None
         assert output.shape == (2, 256, 512)
@@ -440,7 +447,7 @@ class TestByteLatentTransformer:
 
     def test_loss_backward(self):
         args = create_args()
-        args = args.model_copy(update=dict(efficient_attn="sdpa"))
+        args = args.model_copy(update=dict(attn_impl="xformers"))
         batch = fake_batch()
         model = ByteLatentTransformer(args)
         steps = 10

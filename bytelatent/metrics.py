@@ -11,11 +11,10 @@ from typing import Any, Union
 
 import torch
 import torch.nn as nn
+import wandb
 from pydantic import BaseModel, ConfigDict
 
-import wandb
-
-# from bytelatent.distributed import get_is_master
+from bytelatent.distributed import get_is_master
 
 logger = logging.getLogger()
 
@@ -190,9 +189,8 @@ def upload_train_to_wandb(
     import json
     from pathlib import Path
 
-    from omegaconf import OmegaConf
-
     import wandb
+    from omegaconf import OmegaConf
 
     cfg = OmegaConf.load(Path(ckpt_dir) / "config.yaml")
     cfg = OmegaConf.to_container(cfg)

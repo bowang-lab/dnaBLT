@@ -7,7 +7,6 @@ import numpy as np
 import yaml
 from pydantic import BaseModel, ConfigDict
 
-from bytelatent.byte_tokenizers.build_tokenizer import TokenizerArgs
 from bytelatent.checkpoint import CheckpointArgs
 from bytelatent.data.data_types import Batch
 from bytelatent.data.iterators.abstract_iterator import StatefulIterator
@@ -30,6 +29,8 @@ from bytelatent.metrics import LoggingArgs
 from bytelatent.model.blt import ByteLatentTransformerArgs
 from bytelatent.optim import OptimArgs
 from bytelatent.profiling import ProfilerArgs
+from bytelatent.tokenizers.build_tokenizer import TokenizerArgs
+from bytelatent.transformer import LMTransformerArgs
 
 logger = logging.getLogger()
 
@@ -46,8 +47,11 @@ def distribute_data_to_rank(
     arrow_batch_size: int,
     rank: int,
     world_size: int,
+    s3_profile: str | None = None,
 ) -> ArrowFileIterator:
-    dataset_chunks = find_and_sanitize_chunks(dataset_path, world_size)
+    dataset_chunks = find_and_sanitize_chunks(
+        dataset_path, world_size, s3_profile=s3_profile
+    )
     n_workers_per_chunk = world_size // len(dataset_chunks)
     rank_to_arrow_iterator_params = []
     for chunk_path in dataset_chunks:
@@ -61,6 +65,7 @@ def distribute_data_to_rank(
                     dataset_files=None,
                     entropy_model_name=entropy_model_name,
                     arrow_batch_size=arrow_batch_size,
+                    s3_profile=s3_profile,
                 )
             )
     return rank_to_arrow_iterator_params[rank]
@@ -68,6 +73,7 @@ def distribute_data_to_rank(
 
 class DataloaderArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    s3_profile: str | None = None
     root_dir: str | None = None
     sources: dict[str, float] = {}
     batch_size: int = 2
@@ -107,6 +113,7 @@ class DataloaderArgs(BaseModel):
                 arrow_batch_size=self.arrow_batch_size,
                 rank=rank,
                 world_size=world_size,
+                s3_profile=self.s3_profile,
             )
             looping_iterator = LoopingIterator(arrow_iterator)
             preprocess_iterator = PreprocessIterator(
@@ -157,6 +164,8 @@ class TrainArgs(BaseModel):
 
     seed: int = 42
 
+    debug_dynamo: bool = False
+
     # Number of gradient accumulation steps
     # Total batch size is batch_size*grad_acc_steps
     grad_acc_steps: int = 1
@@ -170,6 +179,10 @@ class TrainArgs(BaseModel):
     data: DataloaderArgs = DataloaderArgs()
     optim: OptimArgs = OptimArgs()
     model: ByteLatentTransformerArgs = ByteLatentTransformerArgs()
+    # This is only needed for training the entropy model
+    entropy_model: LMTransformerArgs | None = None
+    # Instead of training main model, train entropy model
+    train_entropy_model: bool = False
     distributed: DistributedArgs = DistributedArgs()
     env: EnvironmentArgs = EnvironmentArgs()
 

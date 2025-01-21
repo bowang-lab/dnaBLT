@@ -1,4 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
+import json
+import os
 import sys
 from pathlib import Path
 
@@ -11,6 +13,8 @@ from pydantic import BaseModel
 class PlotEntropiesConfig(BaseModel):
     data_path: str | None
     chart_path: str
+    score_override_path: str | None = None
+    threshold_override: float | None = None
 
     class Config:
         extra = "forbid"
@@ -36,8 +40,20 @@ def main():
     plot_config = PlotEntropiesConfig(**conf_dict)
     with open(plot_config.data_path) as f:
         json_data = f.read()
+
     plot_data = PlotEntropiesData.model_validate_json(json_data)
     df = pd.read_json(plot_data.dataframe_json)
+    print("LEN", len(df))
+    if plot_config.threshold_override is None:
+        threshold = plot_data.threshold
+    else:
+        threshold = plot_config.threshold_override
+    if plot_config.score_override_path is not None:
+        with open(plot_config.score_override_path) as f:
+            scores = json.load(f)["score"]
+            assert len(scores) == len(df)
+            df["entropies"] = scores
+            df["start"] = [1] + (df["entropies"] > threshold).values.tolist()[:-1]
 
     x_ticks = []
     for row in df.itertuples():
@@ -64,7 +80,7 @@ def main():
         ),
     )
     rule = base.mark_rule(color="red", strokeDash=[4, 4]).encode(
-        y=alt.datum(plot_data.threshold),
+        y=alt.datum(threshold),
     )
     patch_rules = (
         alt.Chart(df[df["start"] > 0])

@@ -1,5 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
+from dataclasses import dataclass
 from typing import Optional, Tuple, Union
 
 import torch
@@ -13,6 +14,7 @@ from torch.distributed.tensor.parallel import (
     parallelize_module,
 )
 from torch.nn.attention.flex_attention import BlockMask, create_block_mask
+from xformers.ops import AttentionBias, fmha
 
 from bytelatent.base_transformer import (
     BaseTransformer,
@@ -20,25 +22,7 @@ from bytelatent.base_transformer import (
     RMSNorm,
     cross_entropy,
 )
-
-from xformers.ops import AttentionBias, fmha
-
-
-def create_causal_mask(seqlen, attn_impl, sliding_window):
-    if sliding_window is not None and attn_impl == "xformers":
-        return fmha.attn_bias.LocalAttentionFromBottomRightMask(
-            window_left=sliding_window - 1, window_right=0
-        )
-    elif attn_impl == "xformers":
-        return fmha.attn_bias.LowerTriangularMask()
-    elif attn_impl == "sdpa":
-        return "causal"
-    elif attn_impl == "flex_attention":
-        return create_block_mask(causal_mask, None, None, seqlen, seqlen)
-    else:
-        raise NotImplementedError(
-            f"Attention {attn_impl} with {sliding_window} sliding window not implemented"
-        )
+from bytelatent.model.utils import create_causal_mask
 
 
 def attention_flops_per_token(n_layers, seq_len, dim, causal):
@@ -96,8 +80,10 @@ class LMTransformer(BaseTransformer):
         target: Optional[torch.Tensor] = None,
         tok_idx: Optional[torch.Tensor] = None,
         mask: Optional[Union[BlockMask, AttentionBias, torch.Tensor, str]] = None,
-        attn_impl: str = "sdpa",
+        attn_impl: str | None = None,
     ):
+        if attn_impl is None:
+            attn_impl = self.attn_impl
         bsz, seqlen = token_values.shape
 
         h = self.tok_embeddings(token_values)
@@ -105,7 +91,14 @@ class LMTransformer(BaseTransformer):
         mask = (
             mask
             if mask is not None
-            else create_causal_mask(seqlen, attn_impl, self.sliding_window)
+            else create_causal_mask(
+                seqlen,
+                attn_impl,
+                self.attn_bias_type,
+                sliding_window=self.sliding_window,
+                tokens=token_values,
+                eos_id=self.eos_id,
+            )
         )
         h = super().forward(h, tok_idx=tok_idx, mask=mask, attn_impl=attn_impl)
 

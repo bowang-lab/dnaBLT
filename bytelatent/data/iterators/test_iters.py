@@ -2,12 +2,12 @@
 import pandas as pd
 from pydantic import BaseModel
 
-from bytelatent.byte_tokenizers.build_tokenizer import TokenizerArgs
 from bytelatent.constants import BLT_DATA
 from bytelatent.data.data_types import BltExample
 from bytelatent.data.iterators.abstract_iterator import IteratorState, StatefulIterator
 from bytelatent.data.iterators.preprocess_iterator import PreprocessIterator
 from bytelatent.data.patcher import PatcherArgs, PatchingModeEnum
+from bytelatent.tokenizers.build_tokenizer import TokenizerArgs
 
 
 class BltTestIteratorState(BaseModel, IteratorState):
