@@ -26,6 +26,7 @@ from torch.utils.data import DataLoader, Dataset
 from datasets import config
 
 from bytelatent.transformer import LMTransformer, LMTransformerArgs
+from bytelatent.blt_tokenizers.constants import BOE_ID, BOS_ID, EOS_ID, OFFSET, PAD_ID
 
 from xformers.ops import AttentionBias
 
@@ -64,10 +65,15 @@ class DNAByteDataset(Dataset):
         bytes_array = np.frombuffer(bytes_data, dtype=np.uint8)
 
         # Truncate or pad to the sequence length
-        if len(bytes_array) > self.seq_length:
-            bytes_array = bytes_array[: self.seq_length]
-        else:
-            bytes_array = np.pad(bytes_array, (0, self.seq_length - len(bytes_array)))
+        if len(bytes_array) > self.seq_length - 2:  # Leave room for BOS and EOS tokens
+            bytes_array = bytes_array[: self.seq_length - 2]
+            
+        # Add BOS and EOS tokens
+        bytes_array = np.pad(bytes_array, (1, 1), constant_values=(BOS_ID, EOS_ID))
+        
+        # Pad remaining sequence if needed
+        if len(bytes_array) < self.seq_length:
+            bytes_array = np.pad(bytes_array, (0, self.seq_length - len(bytes_array)), constant_values=PAD_ID)
 
         return torch.from_numpy(bytes_array.copy()).long()
 
