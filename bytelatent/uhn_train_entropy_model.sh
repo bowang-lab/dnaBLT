@@ -28,24 +28,6 @@ cd $home_dir
 
 # Set the master node address (first node in the allocation)
 export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
-# export MASTER_PORT=29500
-export MASTER_PORT=$(python - <<EOF
-import socket
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-sock.bind(('', 0))  # OS will allocate a free port
-free_port = sock.getsockname()[1]
-sock.close()
-print(free_port)
-EOF
-)
-
-# Print some information
-echo "Master node: $MASTER_ADDR"
-echo "Master port: $MASTER_PORT"
-echo "Number of nodes: $SLURM_NNODES"
-echo "GPUs per node: $SLURM_GPUS_ON_NODE"1~# Set the master node address (first node in the allocation)
-export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
-# export MASTER_PORT=29500
 export MASTER_PORT=$(python - <<EOF
 import socket
 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
