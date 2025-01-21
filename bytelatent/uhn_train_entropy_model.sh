@@ -53,6 +53,7 @@ export PYTHONFAULTHANDLER=1
 # Run training
 stdbuf -oL -eL srun --exclusive python3 bytelatent/train_entropy_model.py \
     --data_path $data_path \
+    --data_cache_dir $data_path/cache \
     --checkpoint_dir $output_path/checkpoints \
     --stage stage1 \
     --hidden_dim 512 \
