@@ -11,6 +11,7 @@ to predict the next byte in the sequence.
 
 import os
 import argparse
+import wandb
 from typing import Any, Optional, Tuple, Union
 
 import numpy as np
@@ -253,6 +254,7 @@ def main(args: argparse.Namespace):
     pl.seed_everything(args.seed)
     torch.set_default_dtype(torch.bfloat16)
     torch.set_float32_matmul_precision("medium")
+    wandb.init(mode="offline")
 
     os.environ["HF_DATASETS_CACHE"] = args.data_cache_dir
     config.HF_DATASETS_CACHE = args.data_cache_dir
@@ -271,7 +273,7 @@ def main(args: argparse.Namespace):
 
     callbacks = [
         ModelCheckpoint(
-            dirpath="checkpoints",
+            dirpath=args.checkpoint_dir,
             filename="entropy-{step:07d}-{val_loss:.2f}",
             monitor="val_loss",
             mode="min",
@@ -334,6 +336,7 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--run_name", type=str, default="entropy-model")
     parser.add_argument("--stage", type=str, default="stage1")
+    parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
 
     args = parser.parse_args()
     main(args)
