@@ -67,13 +67,17 @@ class DNAByteDataset(Dataset):
         # Truncate or pad to the sequence length
         if len(bytes_array) > self.seq_length - 2:  # Leave room for BOS and EOS tokens
             bytes_array = bytes_array[: self.seq_length - 2]
-            
+
         # Add BOS and EOS tokens
         bytes_array = np.pad(bytes_array, (1, 1), constant_values=(BOS_ID, EOS_ID))
-        
+
         # Pad remaining sequence if needed
         if len(bytes_array) < self.seq_length:
-            bytes_array = np.pad(bytes_array, (0, self.seq_length - len(bytes_array)), constant_values=PAD_ID)
+            bytes_array = np.pad(
+                bytes_array,
+                (0, self.seq_length - len(bytes_array)),
+                constant_values=PAD_ID,
+            )
 
         return torch.from_numpy(bytes_array.copy()).long()
 
@@ -274,6 +278,9 @@ def main(args: argparse.Namespace):
         args: Command line arguments containing model and training hyperparameters
             including data paths, model architecture, optimization settings, etc.
     """
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    np.random.seed(args.seed)
     pl.seed_everything(args.seed)
     torch.set_default_dtype(torch.bfloat16)
     torch.set_float32_matmul_precision("medium")
