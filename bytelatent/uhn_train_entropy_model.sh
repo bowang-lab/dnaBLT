@@ -69,7 +69,7 @@ stdbuf -oL -eL srun --exclusive python3 bytelatent/train_entropy_model.py \
     --grad_clip 1.0 \
     --grad_accum 2 \
     --devices 4 \
-    --strategy deepspeed_stage_3 \
+    --strategy ddp \
     --run_name "entropy_model_$(date +%Y%m%d_%H%M%S)" \
     --seed 23 \
     --join_stage_path True
