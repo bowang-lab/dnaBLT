@@ -169,7 +169,7 @@ class EntropyModelTrainer(pl.LightningModule):
         target: Optional[torch.Tensor] = None,
         tok_idx: Optional[torch.Tensor] = None,
         mask: Optional[Union[BlockMask, AttentionBias, torch.Tensor, str]] = None,
-        attn_impl: str = "sdpa",
+        attn_impl: str = "xformers",
     ) -> torch.Tensor:
         """Forward pass of the model.
 
@@ -291,8 +291,8 @@ def main(args: argparse.Namespace):
     callbacks = [
         ModelCheckpoint(
             dirpath=args.checkpoint_dir,
-            filename="entropy-{step:07d}-{val_loss:.2f}",
-            monitor="val_loss",
+            filename="entropy-{step:07d}-{train_loss:.2f}",
+            monitor="train_loss",
             mode="min",
             save_top_k=3,
             every_n_train_steps=1000,
@@ -316,8 +316,10 @@ def main(args: argparse.Namespace):
         enable_checkpointing=True,
         enable_progress_bar=True,
         enable_model_summary=True,
+        log_every_n_steps=25,
     )
 
+    trainer.save_checkpoint(f"{args.checkpoint_dir}/entropy-initial.ckpt")
     trainer.fit(model, train_loader, val_loader)
     trainer.test(model, test_loader)
 
