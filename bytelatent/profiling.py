@@ -7,14 +7,13 @@ import os
 from pathlib import Path
 
 import torch.distributed
-from pydantic import BaseModel
-from torch.profiler.profiler import profile
-
-from bytelatent.distributed import get_is_master
-
 import wandb
 import xformers.profiler
+from pydantic import BaseModel
+from torch.profiler.profiler import profile
 from xformers.profiler import MemSnapshotsProfiler, PyTorchProfiler
+
+from bytelatent.distributed import get_is_master
 
 
 class ProfilerArgs(BaseModel):

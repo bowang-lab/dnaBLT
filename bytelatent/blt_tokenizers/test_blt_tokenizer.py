@@ -2,8 +2,8 @@
 import json
 
 from bytelatent.constants import BLT_DATA
-from bytelatent.tokenizers.blt_tokenizer import BltTokenizer
-from bytelatent.tokenizers.build_tokenizer import TokenizerArgs
+from bytelatent.blt_tokenizers.blt_tokenizer import BltTokenizer
+from bytelatent.blt_tokenizers.build_tokenizer import TokenizerArgs
 
 
 def test_tokenizer_bytes():

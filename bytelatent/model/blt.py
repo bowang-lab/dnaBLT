@@ -14,12 +14,12 @@ from bytelatent.base_transformer import (
     InitStdFactor,
     TransformerBlock,
 )
-from bytelatent.byte_tokenizers.constants import BOE_ID, BOS_ID, EOS_ID, OFFSET, PAD_ID
 from bytelatent.data.patcher import Patcher, PatcherArgs
-from bytelatent.model.local_models import LocalDecoder, LocalEncoder
+from bytelatent.model.latent_transformer import GlobalTransformer
 from bytelatent.model.mamba import GlobalMamba
-from bytelatent.model.transformer import GlobalTransformer
+from bytelatent.model.local_models import LocalDecoder, LocalEncoder, LocalModelArgs
 from bytelatent.model.utils import downsample
+from bytelatent.blt_tokenizers.constants import BOE_ID, BOS_ID, EOS_ID, OFFSET, PAD_ID
 
 
 def attention_flops_per_token(n_layers, seq_len, dim, causal):
@@ -404,19 +404,16 @@ def patch_ids_from_lengths(patch_lengths, seq_len):
 
 
 class ByteLatentTransformerArgs(BaseTransformerArgs):
-    model_config = ConfigDict(extra="forbid")
-
     # Basic model configuration
     seed: int = 42
     vocab_size: int = -1
     dim: int = 512
     n_layers: int = 8
     n_heads: int = 8
-    state_size: int = 128  # For Mamba
+    state_size: int = 128
     # TODO: What is the purpose of this parameter?
     weight_tying: bool = False
-    sliding_window: Optional[int] = None
-    architecture: str = "vanilla"  # For Mamba use "mamba"
+    architecture: str = "vanilla" # For Mamba use "mamba"
 
     # Architecture and dimensions
     dim_token: int = 256
@@ -475,11 +472,6 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     recompute_attn: bool = True
     custom_bwd: bool = False
     layer_ckpt: str = "all"
-    efficient_attn: str | None = None
-
-    # Architecture options
-    patch_only_encoder: bool = False
-    patch_only_decoder: bool = False
 
     # Initialization and attention
     init_use_gaussian: bool = True
@@ -544,9 +536,6 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     # Logging
     full_logging_n_layers: int = 4
 
-    # Special token config
-    eos_id: int | None = None
-
     @model_validator(mode="after")
     def check_hash_byte_sizes(self) -> Self:
         if (
@@ -559,22 +548,6 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
                 if len(x) > 0
             ]
         return self
-
-
-class LocalEncoderArgs(ByteLatentTransformerArgs):
-    # Local encoder specific dimensions
-    n_heads_local_encoder: int = 8
-    dim_token_emb: int | None = None
-    dim_patch_emb: int | None = None
-
-    def __post_init__(self):
-        # Override base args with local encoder specific values
-        self.dim = self.dim_local_encoder
-        self.n_layers = self.n_layers_local_encoder
-        self.n_heads = self.n_heads_local_encoder
-        self.cross_attn_decoder = False
-        self.cross_attn_k = self.cross_attn_k if self.cross_attn_encoder else None
-        self.attn_bias_type = "local_block_causal"
 
 
 class GlobalTransformerArgs(ByteLatentTransformerArgs):
@@ -656,20 +629,42 @@ def create_global_mamba(args: ByteLatentTransformerArgs) -> GlobalMamba:
 
 
 def create_local_encoder(args: ByteLatentTransformerArgs) -> LocalEncoder:
-    # First deep copy the original args
-    # Replace with local encoder specific values
-    local_encoder_args = args.model_copy(
-        deep=True,
-        update=dict(
-            dim=args.dim_local_encoder,
-            n_layers=args.n_layers_local_encoder,
-            n_heads=args.n_heads_local_encoder,
-            dim_token_emb=get_encoder_dim_token_emb(args),
-            dim_patch_emb=get_encoder_dim_patch_emb(args),
-            cross_attn_decoder=False,
-            cross_attn_k=args.cross_attn_k if args.cross_attn_encoder else None,
-            attn_bias_type="local_block_causal",
-        ),
+    local_encoder_args = LocalModelArgs(
+        # Updated args
+        dim=args.dim_local_encoder,
+        n_layers=args.n_layers_local_encoder,
+        n_heads=args.n_heads_local_encoder,
+        dim_token_emb=get_encoder_dim_token_emb(args),
+        dim_patch_emb=get_encoder_dim_patch_emb(args),
+        cross_attn_encoder=args.cross_attn_encoder,
+        cross_attn_decoder=False,
+        cross_attn_k=args.cross_attn_k if args.cross_attn_encoder else None,
+        cross_attn_init_by_pooling=args.cross_attn_init_by_pooling,
+        # Defaults
+        head_dim=args.head_dim,
+        max_seqlen=args.max_encoder_seq_length,
+        dropout=args.dropout,
+        vocab_size=args.vocab_size + args.pm_size,
+        norm_eps=args.norm_eps,
+        patch_size=args.patch_size,
+        sliding_window=args.local_attention_window_len,
+        use_rope=args.use_rope,
+        rope_theta=args.rope_theta,
+        init_base_std=args.init_base_std,
+        init_std_factor=args.init_std_factor,
+        n_kv_heads=args.n_kv_heads,
+        attn_impl=args.attn_impl,
+        attn_bias_type="local_block_causal",
+        multiple_of=args.multiple_of,
+        ffn_dim_multiplier=args.ffn_dim_multiplier,
+        patching_mode=args.patching_mode,
+        use_local_encoder_transformer=args.use_local_encoder_transformer,
+        downsampling_by_pooling=args.downsampling_by_pooling,
+        encoder_hash_byte_group_size=args.encoder_hash_byte_group_size,
+        cross_attn_all_layers_encoder=args.cross_attn_all_layers_encoder,
+        cross_attn_all_layers_decoder=args.cross_attn_all_layers_decoder,
+        cross_attn_nheads=args.cross_attn_nheads,
+        eos_id=args.eos_id,
     )
 
     return LocalEncoder(local_encoder_args)
@@ -677,18 +672,41 @@ def create_local_encoder(args: ByteLatentTransformerArgs) -> LocalEncoder:
 
 def create_local_decoder(args: ByteLatentTransformerArgs) -> LocalDecoder:
     # First deep copy the original args
-    local_decoder_args = args.model_copy(
-        deep=True,
-        update=dict(
-            dim=args.dim_local_decoder,
-            n_layers=args.n_layers_local_decoder,
-            n_heads=args.n_heads_local_decoder,
-            cross_attn_encoder=False,
-            cross_attn_init_by_pooling=False,  # states are already defined
-            dim_token_emb=get_decoder_dim_token_emb(args),
-            dim_patch_emb=args.dim_global,
-            cross_attn_k=args.cross_attn_k if args.cross_attn_decoder else None,
-        ),
+    local_decoder_args = LocalModelArgs(
+        dim=args.dim_local_decoder,
+        n_layers=args.n_layers_local_decoder,
+        n_heads=args.n_heads_local_decoder,
+        dim_token_emb=get_decoder_dim_token_emb(args),
+        dim_patch_emb=args.dim_global,
+        cross_attn_encoder=False,
+        cross_attn_decoder=args.cross_attn_decoder,
+        cross_attn_init_by_pooling=False,  # states are already defined
+        cross_attn_k=args.cross_attn_k if args.cross_attn_decoder else None,
+        # Defaults
+        head_dim=args.head_dim,
+        max_seqlen=args.max_encoder_seq_length,
+        dropout=args.dropout,
+        vocab_size=args.vocab_size + args.pm_size,
+        norm_eps=args.norm_eps,
+        patch_size=args.patch_size,
+        sliding_window=args.local_attention_window_len,
+        use_rope=args.use_rope,
+        rope_theta=args.rope_theta,
+        init_base_std=args.init_base_std,
+        init_std_factor=args.init_std_factor,
+        n_kv_heads=args.n_kv_heads,
+        attn_impl=args.attn_impl,
+        attn_bias_type="local_block_causal",
+        multiple_of=args.multiple_of,
+        ffn_dim_multiplier=args.ffn_dim_multiplier,
+        patching_mode=args.patching_mode,
+        use_local_encoder_transformer=args.use_local_encoder_transformer,
+        downsampling_by_pooling=args.downsampling_by_pooling,
+        encoder_hash_byte_group_size=args.encoder_hash_byte_group_size,
+        cross_attn_all_layers_encoder=args.cross_attn_all_layers_encoder,
+        cross_attn_all_layers_decoder=args.cross_attn_all_layers_decoder,
+        cross_attn_nheads=args.cross_attn_nheads,
+        eos_id=args.eos_id,
     )
 
     return LocalDecoder(local_decoder_args)
@@ -794,7 +812,6 @@ class ByteLatentTransformer(nn.Module):
 
         # General configuration
         self.weight_tying = args.weight_tying
-        self.sliding_window = args.sliding_window
         self.patch_size = args.patch_size
         self.patching_mode = args.patching_mode
         self.boe_id, self.bos_id, self.pad_id, self.eos_id = (

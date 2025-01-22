@@ -91,7 +91,7 @@ def init_logger(
     log_file: str | None = None,
     *,
     name: str | None = None,
-    level: str = "NOTSET",
+    level: str = "INFO",
 ):
     """
     Setup logging.

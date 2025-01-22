@@ -1,12 +1,14 @@
 #!/bin/bash
-#SBATCH -c 8
-#SBATCH --gres=gpu:2
+#SBATCH --account=deadline
+#SBATCH --qos deadline
+#SBATCH -c 16
+#SBATCH --gres=gpu:4
 #SBATCH --job-name=entropy_model
-#SBATCH --mem=48GB
+#SBATCH --mem=64GB
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
 #SBATCH -p a40
-#SBATCH --time=12:00:00
+#SBATCH --time=23:00:00
 #SBATCH --no-requeue
 
 # Source conda
@@ -36,6 +38,7 @@ export PYTHONFAULTHANDLER=1
 # Run training
 stdbuf -oL -eL srun python3 bytelatent/train_entropy_model.py \
     --data_path /projects/llm/open-genome/ \
+    --data_cache_dir /projects/llm/open-genome/cache \
     --stage stage1 \
     --hidden_dim 512 \
     --n_layers 14 \
@@ -47,10 +50,12 @@ stdbuf -oL -eL srun python3 bytelatent/train_entropy_model.py \
     --num_workers 4 \
     --learning_rate 5e-5 \
     --weight_decay 0.1 \
-    --max_epochs 10 \
+    --max_epochs 2 \
     --grad_clip 1.0 \
     --grad_accum 4 \
-    --devices 2 \
+    --devices 4 \
     --strategy deepspeed_stage_3 \
     --run_name "entropy_model_$(date +%Y%m%d_%H%M%S)" \
-    --seed 23
+    --seed 23 \
+    --join_stage_path False \
+

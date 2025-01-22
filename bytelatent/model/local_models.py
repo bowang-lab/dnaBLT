@@ -1,45 +1,75 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 import logging
-from typing import List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union
 
 import torch
 import torch.nn
 import torch.nn as nn
+from pydantic import BaseModel, ConfigDict
 from torch.nn import functional as F
 from torch.nn.attention.flex_attention import BlockMask
+from xformers.ops import AttentionBias
 
 from bytelatent.base_transformer import (
+    BaseTransformerArgs,
     InitStdFactor,
     RMSNorm,
     RotaryEmbedding,
     TransformerBlock,
 )
-from bytelatent.byte_tokenizers.blt_tokenizer import BOE_ID
-from bytelatent.model.transformer import CrossAttention
+from bytelatent.model.latent_transformer import CrossAttention
 from bytelatent.model.utils import create_causal_mask, downsample
-
-from xformers.ops import AttentionBias
+from bytelatent.blt_tokenizers.blt_tokenizer import BOE_ID
 
 logger = logging.getLogger()
 
 
+class LocalModelArgs(BaseTransformerArgs):
+    model_config = ConfigDict(extra="forbid")
+    # Override defaults
+    attn_impl: str | None = "xformers"
+    attn_bias_type: str | None = "local_block_causal"
+
+    # Local encoder specific dimensions
+    dropout: float
+    vocab_size: int
+    patch_size: int
+    sliding_window: int | None
+    use_rope: bool
+    cross_attn_encoder: bool | None
+    cross_attn_decoder: bool | None
+    cross_attn_k: int | None
+    cross_attn_init_by_pooling: bool
+    patching_mode: str
+    use_local_encoder_transformer: bool
+    downsampling_by_pooling: str | None
+    encoder_hash_byte_group_size: Any | None = None
+    cross_attn_all_layers_encoder: bool = False
+    cross_attn_all_layers_decoder: bool = False
+    cross_attn_nheads: int | None
+
+    dim_token_emb: int
+    dim_patch_emb: int | None
+
+
 class LocalModelBase(nn.Module):
-    def __init__(self, args):
+    def __init__(self, args: LocalModelArgs):
         super().__init__()
 
         self.dim = args.dim
         self.dropout = args.dropout
-        self.vocab_size = args.vocab_size + args.pm_size
+        self.vocab_size = args.vocab_size
         self.patch_size = args.patch_size
 
-        self.efficient_attn = args.efficient_attn
+        self.attn_impl = args.attn_impl
         self.sliding_window = args.sliding_window
         self.use_rope = args.use_rope
         self.init_std_factor = args.init_std_factor
         self.cross_attn_encoder = getattr(args, "cross_attn_encoder", None)
         self.cross_attn_decoder = getattr(args, "cross_attn_decoder", None)
         self.cross_attn_k = getattr(args, "cross_attn_k", None)
+        self.eos_id = args.eos_id
 
         self.boe_id = BOE_ID
 
@@ -55,7 +85,7 @@ class LocalModelBase(nn.Module):
             self.rope = RotaryEmbedding(
                 theta=args.rope_theta,
                 head_dim=args.head_dim or args.dim // args.n_heads,
-                max_seqlen=getattr(args, "max_encoder_seq_length", args.max_length),
+                max_seqlen=args.max_seqlen,
             )
             self.pos_embeddings = None
 
@@ -67,21 +97,15 @@ class LocalModelBase(nn.Module):
 
         self.patch_embedding_projection = self._create_patch_projection(args)
 
-    def _should_create_patch_projection(self, args):
+    def _should_create_patch_projection(self, args: LocalModelArgs):
         dimension_mismatch = (
             getattr(args, "dim_patch_emb") and args.dim_patch_emb != self.dim
         )
 
         # Check cross attention conditions
         cross_attn_conditions = (
-            hasattr(args, "cross_attn_encoder")
-            and args.cross_attn_encoder
-            and getattr(args, "cross_attn_init_by_pooling")
-        ) or (
-            hasattr(args, "cross_attn_decoder")
-            and args.cross_attn_decoder
-            and getattr(args, "cross_attn_init_by_pooling")
-        )
+            args.cross_attn_encoder and args.cross_attn_init_by_pooling
+        ) or (args.cross_attn_decoder and args.cross_attn_init_by_pooling)
 
         return dimension_mismatch or cross_attn_conditions
 
@@ -173,7 +197,7 @@ class LocalModelBase(nn.Module):
 
 
 class LocalEncoder(LocalModelBase):
-    def __init__(self, args):
+    def __init__(self, args: LocalModelArgs):
         super().__init__(args)
         self.output_proj = (
             args.patching_mode in ["entropy", "probmax"]
@@ -181,7 +205,6 @@ class LocalEncoder(LocalModelBase):
 
         self.apply_transformer = args.use_local_encoder_transformer
         self.downsampling_by_pooling = args.downsampling_by_pooling
-        self.patch_only = args.patch_only_encoder
         self.expects_hash_embeddings = args.encoder_hash_byte_group_size is not None
         self.cross_attn_encoder = args.cross_attn_encoder
         self.cross_attn_all_layers_encoder = args.cross_attn_all_layers_encoder
@@ -225,7 +248,14 @@ class LocalEncoder(LocalModelBase):
         """ """
         bs, seqlen = tokens.shape
         if mask is None:
-            mask = create_causal_mask(seqlen, self.efficient_attn, self.sliding_window)
+            mask = create_causal_mask(
+                seqlen,
+                self.attn_impl,
+                "local_block_causal",
+                sliding_window=self.sliding_window,
+                tokens=tokens,
+                eos_id=self.eos_id,
+            )
 
         h = self.apply_embedding(tokens, embeds)
         freqs_cis = self.rope(seqlen=seqlen) if self.use_rope else None
@@ -233,7 +263,7 @@ class LocalEncoder(LocalModelBase):
         h = F.dropout(h, p=self.dropout, training=self.training)
 
         for i, layer in enumerate(self.layers):
-            h = layer(h, mask=mask, freq_cis=freqs_cis, attn_impl=self.efficient_attn)
+            h = layer(h, mask=mask, freq_cis=freqs_cis, attn_impl=self.attn_impl)
             # check if cross attention should be applied to either all layer or only the last layer
             if self.cross_attn_encoder and (
                 i == len(self.layers) - 1 or self.cross_attn_all_layers_encoder
@@ -274,12 +304,10 @@ class LocalEncoder(LocalModelBase):
 
 
 class LocalDecoder(LocalModelBase):
-    def __init__(self, args):
+    def __init__(self, args: LocalModelArgs):
         super().__init__(args)
 
         # Model configuration flags
-        self.patch_only = args.patch_only_decoder
-        self.expects_embeddings = args.share_encoder_decoder_emb
         self.cross_attn_decoder = args.cross_attn_decoder
         self.cross_attn_all_layers_decoder = args.cross_attn_all_layers_decoder
         self.cross_attn_init_by_pooling = args.cross_attn_init_by_pooling
@@ -318,7 +346,14 @@ class LocalDecoder(LocalModelBase):
         assert embeds is not None, "Embeddings must be provided"
 
         if mask is None:
-            mask = create_causal_mask(seqlen, self.efficient_attn, self.sliding_window)
+            mask = create_causal_mask(
+                seqlen,
+                self.attn_impl,
+                "local_block_causal",
+                sliding_window=self.sliding_window,
+                tokens=tokens,
+                eos_id=self.eos_id,
+            )
 
         h = embeds
 
@@ -348,7 +383,7 @@ class LocalDecoder(LocalModelBase):
                 )
                 h = h + h_cross
 
-            h = layer(h, mask=mask, freq_cis=freqs_cis, attn_impl=self.efficient_attn)
+            h = layer(h, mask=mask, freq_cis=freqs_cis, attn_impl=self.attn_impl)
 
         h_preds = self.norm(h)
         h_preds = F.dropout(h_preds, p=self.dropout, training=self.training)

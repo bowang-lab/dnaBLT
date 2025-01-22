@@ -53,7 +53,7 @@ This command will download the `fineweb_edu` and prepare it for training in the 
 python setup/download_prepare_hf_data.py fineweb_edu <MEMORY> --data_dir ./data --seed 42 --nchunks <NCHUNKS>
 ```
 
-to download tokenizer (here llama3), use the folowing script:
+to download tokenizer (here llama3), use the following script:
 
 ```bash
 python setup/download_tokenizer.py llama3 <SAVE_PATH> --api_key <HUGGINGFACE_TOKEN>
@@ -112,6 +112,6 @@ Lingua Code
 
 ## License
 
-The BLT code is partially based on Meta Lingia.
+The BLT code is partially based on Meta Lingua.
 
 Meta Lingua is licensed under BSD-3-Clause license. Refer to the LICENSE file in the top level directory.

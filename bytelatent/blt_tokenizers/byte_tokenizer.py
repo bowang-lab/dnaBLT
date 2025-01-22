@@ -1,5 +1,5 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-from bytelatent.tokenizers.abstract_tokenizer import Tokenizer
+from bytelatent.blt_tokenizers.abstract_tokenizer import Tokenizer
 
 
 class ByteTokenizer(Tokenizer):
