@@ -1,32 +1,24 @@
 import os
-import random
+import argparse
 import fsspec
 import numpy as np
 import pyarrow as pa
 import torch
 import torch.distributed as dist
-from evo import Evo
-
+import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.nn.utils.rnn import pad_sequence
+from evo import Evo
 from rich.progress import Progress, TextColumn
-
 import datasets
 
 # -------------------------------------------------------------------------
 # Collate function (unchanged)
 # -------------------------------------------------------------------------
-def collate(sequences: list):
-    items = []
-    records = []
-    texts = []
-    for seq in sequences:
-        items.append(torch.tensor(seq['tokens'], dtype=torch.int))
-        records.append(seq['record'])
-        texts.append(seq['text'])
+def collate(sequences: list):    
     # Pad to max length in the batch
-    return pad_sequence(items, batch_first=True, padding_value=0), records, texts
+    return pad_sequence([torch.from_numpy(np.frombuffer(bytearray(s.encode('utf-8')), dtype=np.uint8)) for s in sequences['text']], batch_first=True, padding_value=0), sequences['record'], sequences['text']
 
 # -------------------------------------------------------------------------
 # Entropy Helpers (unchanged)
@@ -41,7 +33,7 @@ def entropy(scores):
     p_log_p = log_probs * probs
     return -p_log_p.sum(dim=-1)
 
-def calculate_entropies(tokens: torch.tensor, model: torch.nn.Module, device: str = "cuda"):
+def calculate_entropies(tokens: torch.tensor, model: torch.nn.Module, device):
     """
     tokens: [batch_size, seq_len]
     Return shape: [batch_size, seq_len]
@@ -73,75 +65,45 @@ def calculate_entropies(tokens: torch.tensor, model: torch.nn.Module, device: st
         concat_entropies = torch.cat(entropies, dim=0)
         concat_entropies = concat_entropies.reshape(tokens.shape)
     return concat_entropies
+# test_files = {
+#     'test': [
+#         'hf://datasets/LongSafari/open-genome@84369c058d192dcb607086d71679b877421e3250/stage1/gtdb/gtdb_test.parquet', 
+#         'hf://datasets/LongSafari/open-genome@84369c058d192dcb607086d71679b877421e3250/stage1/imgpr/imgpr_test.parquet'
+#     ]
+# }
+# data = datasets.load_dataset("parquet", data_files=test_files, split="test")
 
-# -------------------------------------------------------------------------
-# Main
-# -------------------------------------------------------------------------
-def main(
-    output_file: str = "out.arrow",
-    patching_device: str = "cuda",
-    entropy_model_checkpoint_dir: str = "public_data/entropy_checkpoint",
-    entropy_model_state_dict_path: str = "public_data/entropy_model.pth",
-    local_rank: int = 0,  # DDP: each process gets a different local rank
-):
-    """
-    Demonstration of torch.nn.DistributedDataParallel.
-    Run with something like:
-      torchrun --nproc_per_node=NUM_GPUS script.py --output-file out.arrow
-    """
-    # ---------------------------------------------------------------------
-    # 1. Initialize process group
-    # ---------------------------------------------------------------------
 
-    real_local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(real_local_rank)
+def init_distributed_training(rank, world_size, master_addr, master_port, backend, gpu_per_node, data_path, split, batch_size, arrow_batch=10):
+    # Set environment variables for master address and port
+    os.environ['MASTER_ADDR'] = master_addr
+    os.environ['MASTER_PORT'] = str(master_port)
 
-    dist.init_process_group(backend="nccl")
-    world_size = dist.get_world_size()
-    rank = dist.get_rank()  # global rank
-    device = torch.device(f"cuda:{real_local_rank}")
-    print(real_local_rank, rank)
+    # Set GPU device
+    torch.cuda.set_device(rank % gpu_per_node)
 
-    # ---------------------------------------------------------------------
-    # 2. Load dataset on each rank
-    #    (Each process will see the same data, but a DistributedSampler
-    #     ensures non-overlapping subsets.)
-    # ---------------------------------------------------------------------
-    test_files = {
-        'test': [
-            'hf://datasets/LongSafari/open-genome@84369c058d192dcb607086d71679b877421e3250/stage1/gtdb/gtdb_test.parquet', 
-            'hf://datasets/LongSafari/open-genome@84369c058d192dcb607086d71679b877421e3250/stage1/imgpr/imgpr_test.parquet'
-        ]
-    }
-    data = datasets.load_dataset("parquet", data_files=test_files, split="test")
-    # data = datasets.load_dataset("/projects/llm/open-genome", "stage1")
+    # Initialize the process group
+    dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
 
-    evo_model = Evo('evo-1-8k-base')
-    entropy_model, tokenizer = evo_model.model, evo_model.tokenizer
-    entropy_model.to(device)
-    entropy_model.eval()
+    # Synchronize all processes
+    dist.barrier()
 
-    print("Begin mapping data")
-    encoded_dataset = data.map(
-        lambda examples: {"tokens": tokenizer.tokenize_batch(examples['text'])},
-        batched=True,
-        batch_size=100,
-    )
+    # Message indicating the process has passed the barrier
+    print(f"Process {rank} passed barrier")
+    data = datasets.load_dataset(f"{data_path}/stage1", split=split).with_format('torch')
 
-    print("Ended mapping data")
 
     # Standard PyTorch DistributedSampler (removes your custom length-sorting).
     # If you need length-based sorting globally, you need a custom distributed sampler.
     dist_sampler = DistributedSampler(
-        encoded_dataset,
+        data,
         num_replicas=world_size,
         rank=rank,
         shuffle=True  # or False, up to you
     )
 
-    batch_size = 32
     dataloader = DataLoader(
-        encoded_dataset,
+        data,
         sampler=dist_sampler,       # ensures each rank sees a unique subset
         batch_size=batch_size,
         collate_fn=collate,
@@ -151,31 +113,32 @@ def main(
     # ---------------------------------------------------------------------
     # 3. Load model & wrap with DistributedDataParallel
     # ---------------------------------------------------------------------
+
+    evo_model = Evo('evo-1-8k-base')
+    entropy_model = evo_model.model
+    entropy_model.to(rank)
+    entropy_model.eval()
     # entropy_model = load_entropy_model(
     #     entropy_model_checkpoint_dir,
     #     entropy_model_state_dict_path,
     #     device=device
     # )
     # Move to device and wrap with DDP
-    print("Begin DDP model")
-    entropy_model = DDP(entropy_model, device_ids=[real_local_rank])
-    print("End DDP model")
+    entropy_model = DDP(entropy_model, device_ids=[rank])
 
     # ---------------------------------------------------------------------
     # 4. Prepare Arrow writing
     # ---------------------------------------------------------------------
     # We'll have each rank write to its own file: out.arrow.{rank}
     # Or gather all results to rank 0 (requires extra logic).
-    rank_output_file = f"{output_file}.{rank}"
+    rank_output_file = f"out.arrow.{rank}"
     entropy_field = pa.field("entropies", pa.list_(pa.float16()), nullable=False)
     sample_id_field = pa.field("sample_id", pa.string(), nullable=False)
     text_field = pa.field("text", pa.string(), nullable=False)
     schema = pa.schema([sample_id_field, text_field, entropy_field])
 
-    arrow_batch_size = 10
-    print("Begin fsspec shit")
+    arrow_batch_size = arrow_batch
     output_fs = fsspec.filesystem("file")
-    print("End fsspec shit")
     # ---------------------------------------------------------------------
     # 5. Compute entropies and write out
     # ---------------------------------------------------------------------
@@ -195,18 +158,17 @@ def main(
                     )
 
                     # Each rank processes only its portion of data
-                    iter = 0
                     for tokens, sample_ids, texts in dataloader:
-                        print(f"BEGIN ITERATION {iter}")
-                        tokens = tokens.to(device)  # push tokens to GPU
+                        tokens = tokens.to(rank)  # push tokens to GPU
                         
                         # Calculate entropies
-                        scores = calculate_entropies(tokens, entropy_model, device=device)
+                        scores = calculate_entropies(tokens, entropy_model, device=rank)
                         scores = scores.cpu().numpy().astype(np.float16)
 
-                        entropies_buffer.append(scores)
-                        id_buffer.append(sample_ids)
-                        text_buffer.append(texts)
+                        for i in range(len(scores)):
+                            entropies_buffer.append(scores[i])    # shape [seq_len]
+                            id_buffer.append(sample_ids[i])       # a single sample_id
+                            text_buffer.append(texts[i]) 
 
                         # Write to arrow in chunks
                         if len(entropies_buffer) == arrow_batch_size:
@@ -225,7 +187,6 @@ def main(
                             text_buffer.clear()
 
                         progress.update(task, advance=1)
-                        iter += 1
 
                     # Write any leftover items in buffers
                     if len(entropies_buffer) > 0:
@@ -254,19 +215,30 @@ def main(
         # -----------------------------------------------------------------
         dist.destroy_process_group()
 
-# -------------------------------------------------------------------------
-# Typer Entry Point
-# -------------------------------------------------------------------------
+def main_worker(local_rank, args):
+    print(os.environ['SLURM_PROCID'])
+    if 'SLURM_PROCID' in os.environ:
+        node_rank = int(os.environ['SLURM_PROCID'])
+    else:
+        node_rank = 0
+    print('node rank:', node_rank)
+    global_rank = node_rank * args.gpu_per_node + local_rank
+    world_size = args.world_size
+    init_distributed_training(global_rank, world_size, args.master_addr, args.master_port, args.backend, args.gpu_per_node, args.data_path, args.split, args.batch_size, args.arrow_batch)
+
 if __name__ == "__main__":
-    """
-    Example usage:
+    parser = argparse.ArgumentParser(description="PyTorch Distributed Training Test with mp.spawn")
+    parser.add_argument('--master_addr', type=str, required=True, help='Address of the master node')
+    parser.add_argument('--master_port', type=int, required=True, help='Port of the master node')
+    parser.add_argument('--backend', type=str, required=True, choices=['gloo', 'nccl'], help='Distributed backend')
+    parser.add_argument('--world_size', type=int, required=True, help='Number of nodes in total')
+    parser.add_argument('--gpu_per_node', type=int, required=True, help='Number of GPUs per node')
+    parser.add_argument('--data_path', type=str, required=True, help="The path to the Open Genome dataset")
+    parser.add_argument('--split', type=str, required=True, help="The train/test/val split")
+    parser.add_argument('--batch_size', type=int, required=True, help="The batch size to process entropies")
+    parser.add_argument('--arrow_batch', type=int, required=False, help="The batch size to write arrow files")
 
-      torchrun --nproc_per_node=2 your_script.py \
-         --output-file my_entropy_output.arrow \
-         --patching-device cuda
+    args = parser.parse_args()
 
-    Each process (rank) will produce a separate file:
-      my_entropy_output.arrow.0
-      my_entropy_output.arrow.1
-    """
-    main()
+    # Use mp.spawn to launch multiple processes, each corresponding to a GPU
+    mp.spawn(main_worker, nprocs=args.gpu_per_node, args=(args,))
