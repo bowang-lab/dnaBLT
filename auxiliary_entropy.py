@@ -9,16 +9,22 @@ import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.nn.utils.rnn import pad_sequence
-from evo import Evo
+# from evo import Evo
 from rich.progress import Progress, TextColumn
 import datasets
+from stripedhyena.utils import dotdict
+from stripedhyena.model import StripedHyena
+import yaml
+import time
 
 # -------------------------------------------------------------------------
 # Collate function (unchanged)
 # -------------------------------------------------------------------------
 def collate(sequences: list):    
     # Pad to max length in the batch
-    return pad_sequence([torch.from_numpy(np.frombuffer(bytearray(s.encode('utf-8')), dtype=np.uint8)) for s in sequences['text']], batch_first=True, padding_value=0), sequences['record'], sequences['text']
+    text = [s['text'] for s in sequences]
+    record = [s['record'] for s in sequences]
+    return pad_sequence([torch.from_numpy(np.frombuffer(bytearray(s.encode('utf-8')), dtype=np.uint8)) for s in text], batch_first=True, padding_value=0), record, text
 
 # -------------------------------------------------------------------------
 # Entropy Helpers (unchanged)
@@ -90,7 +96,14 @@ def init_distributed_training(rank, world_size, master_addr, master_port, backen
 
     # Message indicating the process has passed the barrier
     print(f"Process {rank} passed barrier")
-    data = datasets.load_dataset(f"{data_path}/stage1", split=split).with_format('torch')
+    # data = datasets.load_dataset(f"{data_path}/stage1", split=split).with_format('torch')
+    test_files = {
+        'test': [
+            '/cluster/home/t136085uhn/.cache/huggingface/hub/datasets--LongSafari--open-genome/snapshots/84369c058d192dcb607086d71679b877421e3250/stage1/gtdb/gtdb_test.parquet',
+            '/cluster/home/t136085uhn/.cache/huggingface/hub/datasets--LongSafari--open-genome/snapshots/84369c058d192dcb607086d71679b877421e3250/stage1/imgpr/imgpr_test.parquet'
+            ]
+    }
+    data = datasets.load_dataset("parquet", data_files=test_files, split="test").with_format("torch")
 
 
     # Standard PyTorch DistributedSampler (removes your custom length-sorting).
@@ -114,17 +127,26 @@ def init_distributed_training(rank, world_size, master_addr, master_port, backen
     # 3. Load model & wrap with DistributedDataParallel
     # ---------------------------------------------------------------------
 
-    evo_model = Evo('evo-1-8k-base')
-    entropy_model = evo_model.model
-    entropy_model.to(rank)
-    entropy_model.eval()
+    # evo_model = Evo('evo-1-8k-base')
+    # entropy_model = evo_model.model
+    with open('evo-1-8k-base_inference.yml', 'r') as f:
+        gconfig = yaml.load(f, Loader=yaml.SafeLoader)
+
+    global_config = dotdict(gconfig)
+    map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
+    state_dict_evo = torch.load("evo7b_state_dict.pt", map_location=map_location)
+    model = StripedHyena(global_config)
+    model.load_state_dict(state_dict_evo, strict=True)
+    model.to_bfloat16_except_poles_residues()
+    model.to(rank)
+    model.eval()
     # entropy_model = load_entropy_model(
     #     entropy_model_checkpoint_dir,
     #     entropy_model_state_dict_path,
     #     device=device
     # )
     # Move to device and wrap with DDP
-    entropy_model = DDP(entropy_model, device_ids=[rank])
+    entropy_model = DDP(model, device_ids=[rank])
 
     # ---------------------------------------------------------------------
     # 4. Prepare Arrow writing
@@ -158,14 +180,21 @@ def init_distributed_training(rank, world_size, master_addr, master_port, backen
                     )
 
                     # Each rank processes only its portion of data
+                    start_time = time.time()
+                    tot_bsz_ = 0
                     for tokens, sample_ids, texts in dataloader:
-                        tokens = tokens.to(rank)  # push tokens to GPU
+                        tokens = tokens.to(dtype=torch.int, device=rank)  # push tokens to GPU
                         
                         # Calculate entropies
                         scores = calculate_entropies(tokens, entropy_model, device=rank)
-                        scores = scores.cpu().numpy().astype(np.float16)
+                        scores = scores.cpu().contiguous().view(torch.uint16).numpy().astype(np.float16)
 
-                        for i in range(len(scores)):
+                        bsz_ = len(scores)
+                        tot_bsz_ += bsz_
+
+                        print(f"Processed {tot_bsz_} batches in {time.time() - start_time} seconds")
+
+                        for i in range(bsz_):
                             entropies_buffer.append(scores[i])    # shape [seq_len]
                             id_buffer.append(sample_ids[i])       # a single sample_id
                             text_buffer.append(texts[i]) 

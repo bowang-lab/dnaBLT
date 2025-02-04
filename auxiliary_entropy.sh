@@ -57,5 +57,5 @@ stdbuf -oL -eL srun --exclusive python3 auxiliary_entropy.py \
     --gpu_per_node 4 \
     --data_path $data_path \
     --split test \
-    --batch_size 2 \
+    --batch_size 4 \
     --arrow_batch 10
