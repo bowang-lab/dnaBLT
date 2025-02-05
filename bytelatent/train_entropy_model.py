@@ -311,6 +311,7 @@ def main(args: argparse.Namespace):
             save_top_k=3,
             monitor="val_loss",
             mode="min",
+        ),
         LearningRateMonitor(logging_interval="step"),
     ]
 
