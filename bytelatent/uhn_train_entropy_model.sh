@@ -55,11 +55,12 @@ stdbuf -oL -eL srun --exclusive python3 bytelatent/train_entropy_model.py \
     --data_cache_dir $data_path/cache \
     --checkpoint_dir $output_path/checkpoints \
     --stage stage1 \
-    --hidden_dim 512 \
+    --hidden_dim 768 \
     --n_layers 14 \
-    --n_heads 8 \
+    --n_heads 12 \
     --seq_length 8192 \
-    --ffn_dim_multiplier 4 \
+    --vocab_size 260 \
+    --ffn_dim_multiplier 1 \
     --sliding_window 512 \
     --batch_size 12 \
     --num_workers 5 \

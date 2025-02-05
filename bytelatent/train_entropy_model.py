@@ -165,12 +165,13 @@ class EntropyModelTrainer(pl.LightningModule):
             n_heads=args.n_heads,
             max_seqlen=args.seq_length,
             ffn_dim_multiplier=args.ffn_dim_multiplier,
-            vocab_size=256,  # byte-level, so vocab size is 256
+            vocab_size=args.vocab_size,  # byte-level, so vocab size is 256, paper uses 260
             sliding_window=args.sliding_window,
             seed=args.seed,
             norm_eps=args.norm_eps,
             return_dict=True,
             attn_bias_type="local_block_causal",
+            attn_impl="xformers",
         )
         self.model = LMTransformer(model_args)
 
@@ -345,6 +346,7 @@ if __name__ == "__main__":
     parser.add_argument("--n_layers", type=int, default=14)
     parser.add_argument("--n_heads", type=int, default=8)
     parser.add_argument("--seq_length", type=int, default=8192)
+    parser.add_argument("--vocab_size", type=int, default=256)
     parser.add_argument("--ffn_dim_multiplier", type=int, default=4)
     parser.add_argument("--sliding_window", type=int, default=512)
     parser.add_argument("--weight_tying", type=bool, default=True)
