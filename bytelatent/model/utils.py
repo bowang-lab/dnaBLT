@@ -151,9 +151,9 @@ def create_causal_mask(
             # return fmha.attn_bias.BlockDiagonalCausalMask.from_seqlens(
             #     q_seqlen=tokens_to_seqlen(tokens, eos_id)
             # ).make_local_attention(sliding_window)
-            mask = fmha.attn_bias.LowerTriangularMask()
-            mask = mask.make_local_attention(window_size=sliding_window)
-            return mask
+            return fmha.attn_bias.LocalAttentionFromBottomRightMask(
+                window_left=sliding_window - 1, window_right=0
+            )
         else:
             return fmha.attn_bias.LocalAttentionFromBottomRightMask(
                 window_left=sliding_window - 1, window_right=0

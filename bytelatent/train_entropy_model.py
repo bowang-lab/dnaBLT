@@ -280,6 +280,7 @@ def main(args: argparse.Namespace):
         args: Command line arguments containing model and training hyperparameters
             including data paths, model architecture, optimization settings, etc.
     """
+    torch.use_deterministic_algorithms(False)
     torch.manual_seed(args.seed)
     torch.cuda.manual_seed_all(args.seed)
     np.random.seed(args.seed)
@@ -322,7 +323,7 @@ def main(args: argparse.Namespace):
         devices=args.devices,
         callbacks=callbacks,
         logger=logger,
-        precision="bf16-mixed",
+        precision="16-mixed",
         gradient_clip_val=args.grad_clip,
         accumulate_grad_batches=args.grad_accum,
         strategy=args.strategy,
