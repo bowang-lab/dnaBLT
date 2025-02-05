@@ -309,7 +309,8 @@ def main(args: argparse.Namespace):
             filename="entropy-{step:07d}",
             save_last=True,
             save_top_k=3,
-        ),
+            monitor="val_loss",
+            mode="min",
         LearningRateMonitor(logging_interval="step"),
     ]
 
@@ -330,6 +331,7 @@ def main(args: argparse.Namespace):
         enable_progress_bar=True,
         enable_model_summary=True,
         log_every_n_steps=25,
+        val_check_interval=0.33,
     )
 
     trainer.fit(model, train_loader, val_loader)
