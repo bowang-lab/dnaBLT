@@ -171,7 +171,7 @@ class EntropyModelTrainer(pl.LightningModule):
             norm_eps=args.norm_eps,
             return_dict=True,
             attn_bias_type="local_block_causal",
-            attn_impl="xformers",
+            attn_impl=self.hparams.attention_impl,
         )
         self.model = LMTransformer(model_args)
 
@@ -210,7 +210,7 @@ class EntropyModelTrainer(pl.LightningModule):
         target = torch.roll(batch, shifts=-1, dims=-1)
         target[:, -1] = 0
 
-        outputs = self.forward(batch, target=target, attn_impl="xformers")
+        outputs = self.forward(batch, target=target, attn_impl=self.hparams.attention_impl)
 
         # Calculate and log entropy
         entropy = self.compute_entropy(outputs["logits"])
@@ -332,7 +332,7 @@ def main(args: argparse.Namespace):
         enable_progress_bar=True,
         enable_model_summary=True,
         log_every_n_steps=25,
-        val_check_interval=0.33,
+        val_check_interval=0.25,
     )
 
     trainer.fit(model, train_loader, val_loader)
@@ -352,6 +352,7 @@ if __name__ == "__main__":
     parser.add_argument("--sliding_window", type=int, default=512)
     parser.add_argument("--weight_tying", type=bool, default=True)
     parser.add_argument("--norm_eps", type=float, default=1e-5)
+    parser.add_argument("--attention_impl", type=str, default="xformers")
 
     # Training arguments
     parser.add_argument("--data_path", type=str, required=True)

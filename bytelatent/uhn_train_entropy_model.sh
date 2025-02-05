@@ -72,4 +72,5 @@ stdbuf -oL -eL srun --exclusive python3 bytelatent/train_entropy_model.py \
     --strategy ddp \
     --run_name "entropy_model_$(date +%Y%m%d_%H%M%S)" \
     --seed 23 \
-    --join_stage_path True
+    --join_stage_path True \
+    --attention_impl "sdpa" \
