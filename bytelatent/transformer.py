@@ -100,6 +100,16 @@ class LMTransformer(BaseTransformer):
                 eos_id=self.eos_id,
             )
         )
+
+        print(f"\ntoken_values:\n{token_values}\n")
+        print(f"\ntarget:\n{target}\n")
+        print(f"\ntok_idx:\n{tok_idx}\n")
+        print(f"\nmask:\n{mask}\n")
+        print(f"\nattn_impl:\n{attn_impl}\n")
+        print(f"\nself.attn_bias_type:\n{self.attn_bias_type}\n")
+        print(f"\nself.sliding_window:\n{self.sliding_window}\n")
+        print(f"\nself.eos_id:\n{self.eos_id}\n")
+
         h = super().forward(h, tok_idx=tok_idx, mask=mask, attn_impl=attn_impl)
 
         logits = self.output(self.norm(h))
