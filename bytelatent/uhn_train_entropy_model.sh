@@ -61,7 +61,7 @@ stdbuf -oL -eL srun --exclusive python3 bytelatent/train_entropy_model.py \
     --vocab_size 260 \
     --ffn_dim_multiplier 1 \
     --sliding_window 512 \
-    --batch_size 24 \
+    --batch_size 20 \
     --num_workers 5 \
     --learning_rate 5e-5 \
     --weight_decay 0.1 \
