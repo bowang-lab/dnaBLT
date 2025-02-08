@@ -121,7 +121,6 @@ def causal_mask(b, h, q_idx, kv_idx):
 #     # seqlens = (4, 3, -9, 4, 5) + (0, 0, 11, 0, 0) = (4, 3, 2, 4, 5)
 #     return [int(col[0].item() + 1)] + seqlens.tolist()
 
-
 def tokens_to_seqlen(batch: torch.Tensor, eos_id: int):
     """
     Finds the last eos_id in each row and uses that index (plus one) 
@@ -134,7 +133,7 @@ def tokens_to_seqlen(batch: torch.Tensor, eos_id: int):
         if eos_positions.numel() == 0:
             seqlens.append(row.size(0))
         else:
-            seqlens.append(eos_positions[-1].item() + 1)
+            seqlens.append(eos_positions[0].item() + 1)
     return seqlens
 
 
@@ -150,9 +149,11 @@ def create_causal_mask(
     if attn_impl == "xformers":
         if attn_bias_type is None:
             return fmha.attn_bias.LowerTriangularMask()
+
         elif attn_bias_type == "causal":
             assert sliding_window is None
             return fmha.attn_bias.LowerTriangularMask()
+
         elif attn_bias_type == "block_causal":
             assert sliding_window is None
             assert eos_id is not None
@@ -160,18 +161,22 @@ def create_causal_mask(
             return fmha.attn_bias.BlockDiagonalCausalMask.from_seqlens(
                 q_seqlen=tokens_to_seqlen(tokens, eos_id)
             )
+
         elif attn_bias_type == "local_block_causal":
             assert sliding_window is not None
             assert eos_id is not None
             assert tokens is not None
-
-            q_seqlen = tokens_to_seqlen(tokens, eos_id)
-            print(f"q_seqlen:\n{q_seqlen}\n")
-            mask = fmha.attn_bias.BlockDiagonalCausalMask.from_seqlens(
-                q_seqlen=q_seqlen
+            return fmha.attn_bias.BlockDiagonalCausalMask.from_seqlens(
+                q_seqlen=tokens_to_seqlen(tokens, eos_id)
             ).make_local_attention(sliding_window)
-            print(f"mask:\n{mask}\n")
-            return mask
+
+        elif attn_bias_type == "sliding_causal":
+            # Simple sliding window with causal constraint
+            return fmha.attn_bias.LocalAttentionFromBottomRightMask(
+                window_left=sliding_window - 1,
+                window_right=0
+            )
+
         else:
             return fmha.attn_bias.LocalAttentionFromBottomRightMask(
                 window_left=sliding_window - 1, window_right=0

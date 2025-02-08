@@ -170,7 +170,7 @@ class EntropyModelTrainer(pl.LightningModule):
             seed=args.seed,
             norm_eps=args.norm_eps,
             return_dict=True,
-            attn_bias_type="local_block_causal",
+            attn_bias_type="sliding_causal",
             attn_impl=self.hparams.attention_impl,
         )
         self.model = LMTransformer(model_args)
