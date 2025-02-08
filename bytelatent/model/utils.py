@@ -145,6 +145,7 @@ def create_causal_mask(
     eos_id: int | None = None,
     tokens: torch.Tensor | None = None,
     sliding_window: int | None = None,
+    num_heads: int | None = None,
 ):
     if attn_impl == "xformers":
         if attn_bias_type is None:
@@ -177,10 +178,13 @@ def create_causal_mask(
             if sliding_window is not None:
                 device = tokens.device if tokens is not None else "cpu"
                 window_mask = torch.zeros((seqlen, seqlen), device=device)
-                # Create band matrix - 0s within window, -inf outside
                 for i in range(seqlen):
                     window_start = max(0, i - sliding_window + 1)
                     window_mask[i, :window_start] = float('-inf')
+                
+                window_mask = window_mask.unsqueeze(0).unsqueeze(0)  # [1, 1, seqlen, seqlen]
+                window_mask = window_mask.expand(tokens.shape[0], num_heads, seqlen, seqlen)
+
                 return base_mask.add_bias(window_mask)
             return base_mask
 

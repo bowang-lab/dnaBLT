@@ -98,6 +98,7 @@ class LMTransformer(BaseTransformer):
                 sliding_window=self.sliding_window,
                 tokens=token_values,
                 eos_id=self.eos_id,
+                num_heads=args.n_heads,
             )
         )
 
