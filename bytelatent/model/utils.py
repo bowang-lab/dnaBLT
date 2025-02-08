@@ -172,21 +172,7 @@ def create_causal_mask(
             ).make_local_attention(sliding_window)
 
         elif attn_bias_type == "sliding_causal":
-            # Create base causal mask
-            base_mask = fmha.attn_bias.LowerTriangularMask()
-            
-            if sliding_window is not None:
-                device = tokens.device if tokens is not None else "cpu"
-                window_mask = torch.zeros((seqlen, seqlen), device=device)
-                for i in range(seqlen):
-                    window_start = max(0, i - sliding_window + 1)
-                    window_mask[i, :window_start] = float('-inf')
-                
-                window_mask = window_mask.unsqueeze(0).unsqueeze(0)  # [1, 1, seqlen, seqlen]
-                window_mask = window_mask.expand(tokens.shape[0], num_heads, seqlen, seqlen)
-
-                return base_mask.add_bias(window_mask)
-            return base_mask
+            pass
 
         else:
             return fmha.attn_bias.LocalAttentionFromBottomRightMask(
