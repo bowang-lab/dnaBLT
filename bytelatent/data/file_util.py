@@ -65,7 +65,10 @@ def print_local_to_delete(
 
 @app.command()
 def compare_local_to_blob(
-    source_dirs: list[str], dst_dir: str, s3_profile: str = "blt"
+    source_dirs: list[str],
+    dst_dir: str,
+    s3_profile: str = "blt",
+    print_sizes: bool = False,
 ):
     for s in source_dirs:
         assert s.endswith("/"), "Dirs must end with /"
@@ -75,6 +78,7 @@ def compare_local_to_blob(
     local_fs = fsspec.filesystem("file")
     dst_fs = fsspec.filesystem("s3", profile=s3_profile)
     source_to_files = {}
+    source_file_to_size = {}
     all_local_files = set()
     for s in source_dirs:
         skipped = []
@@ -97,20 +101,61 @@ def compare_local_to_blob(
                     skipped.append(f)
                     continue
 
+            file_without_prefix = f[len(s) :]
+            if file_without_prefix not in source_file_to_size:
+                source_file_to_size[file_without_prefix] = os.path.getsize(f)
+            else:
+                source_file_to_size[file_without_prefix] = max(
+                    source_file_to_size[file_without_prefix], os.path.getsize(f)
+                )
+
             source_to_files[s].append(f)
-            all_local_files.add(f[len(s) :])
+            all_local_files.add(file_without_prefix)
         print(s, len(source_to_files[s]), "skipped", len(skipped), skipped[:10])
 
     dst_files = dst_fs.find(dst_dir)
     print(dst_dir, len(dst_files))
 
-    dst_file_set = {f[len(dst_dir) - len(S3_PREFIX) :] for f in dst_files}
+    dst_file_to_size = {}
+    dst_file_set = set()
+    for f in dst_files:
+        dst_file_without_prefix = f[len(dst_dir) - len(S3_PREFIX) :]
+        dst_file_set.add(dst_file_without_prefix)
+        dst_file_to_size[dst_file_without_prefix] = dst_fs.size(f)
+
     diff = all_local_files.symmetric_difference(dst_file_set)
     print("Local files", len(all_local_files))
     print("DST Files", len(dst_file_set))
     print("Symmetric difference", len(diff))
     dst_only_files = dst_file_set - all_local_files
     print("DST only", len(dst_only_files), list(dst_only_files)[:10])
+
+    all_files = dst_file_set | all_local_files
+    print("Check that files match")
+    size_success = True
+    for f in sorted(all_files):
+        if f in source_file_to_size and f in dst_file_to_size:
+            if source_file_to_size[f] != dst_file_to_size[f]:
+                size_success = False
+                print(
+                    f"Mismatch file size for {f}, Local: {source_file_to_size[f]} Blob: {dst_file_to_size[f]}"
+                )
+            else:
+                if print_sizes:
+                    print(f"Matching file size: {dst_file_to_size[f]} for {f}")
+        elif f not in source_file_to_size:
+            size_success = False
+            print(f"Missing file in source: {f}")
+        elif f not in dst_file_to_size:
+            size_success = False
+            print(f"missing file in dst: {f}")
+        else:
+            raise ValueError("Unexpected to be missing file in src and dst")
+
+    if size_success:
+        print("All files pass size check")
+    else:
+        raise ValueError("At least one file failed size comparison check")
 
 
 if __name__ == "__main__":

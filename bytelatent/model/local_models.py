@@ -34,7 +34,7 @@ class LocalModelArgs(BaseTransformerArgs):
     # Local encoder specific dimensions
     dropout: float
     vocab_size: int
-    patch_size: int
+    patch_size: float
     sliding_window: int | None
     use_rope: bool
     cross_attn_encoder: bool | None
@@ -61,6 +61,7 @@ class LocalModelBase(nn.Module):
         self.dropout = args.dropout
         self.vocab_size = args.vocab_size
         self.patch_size = args.patch_size
+        self.dim_patch_emb = args.dim_patch_emb
 
         self.attn_impl = args.attn_impl
         self.sliding_window = args.sliding_window
@@ -73,12 +74,10 @@ class LocalModelBase(nn.Module):
 
         self.boe_id = BOE_ID
 
-        self.norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.layers = nn.ModuleList(
             [TransformerBlock(args) for _ in range(args.n_layers)]
         )
 
-        self.tok_embeddings = nn.Embedding(self.vocab_size, args.dim)
         if not self.use_rope:
             self.pos_embeddings = nn.Embedding(args.max_length, args.dim)
         else:
@@ -86,6 +85,7 @@ class LocalModelBase(nn.Module):
                 theta=args.rope_theta,
                 head_dim=args.head_dim or args.dim // args.n_heads,
                 max_seqlen=args.max_seqlen,
+                rope_use_fp32_in_outer_product=args.rope_use_fp32_in_outer_product,
             )
             self.pos_embeddings = None
 
@@ -129,15 +129,18 @@ class LocalModelBase(nn.Module):
 
     def init_weights(self, init_std=None):
         self.rope.reset_parameters()
+        if hasattr(self, "norm"):
+            self.norm.reset_parameters()
 
         init_std = init_std or (self.dim ** (-0.5))
-        nn.init.trunc_normal_(
-            self.tok_embeddings.weight,
-            mean=0.0,
-            std=init_std,
-            a=-3 * init_std,
-            b=3 * init_std,
-        )
+        if hasattr(self, "tok_embeddings"):
+            nn.init.trunc_normal_(
+                self.tok_embeddings.weight,
+                mean=0.0,
+                std=init_std,
+                a=-3 * init_std,
+                b=3 * init_std,
+            )
         if self.pos_embeddings is not None:
             nn.init.trunc_normal_(
                 self.pos_embeddings.weight,
@@ -155,7 +158,16 @@ class LocalModelBase(nn.Module):
                 InitStdFactor.DISABLED: 1.0,
             }[self.init_std_factor]
 
-            layer.init_weights(init_std, factor)
+            layer.init_weights(None, factor)
+
+        if hasattr(self, "output"):
+            nn.init.trunc_normal_(
+                self.output.weight,
+                mean=0.0,
+                std=init_std,
+                a=-3 * init_std,
+                b=3 * init_std,
+            )
 
         if self.token_embedding_projection is not None:
             nn.init.trunc_normal_(
@@ -167,21 +179,13 @@ class LocalModelBase(nn.Module):
             )
 
         if self.patch_embedding_projection is not None:
+            patch_emb_std = self.dim_patch_emb ** (-0.5)
             nn.init.trunc_normal_(
                 self.patch_embedding_projection.weight,
                 mean=0.0,
-                std=init_std,
-                a=-3 * init_std,
-                b=3 * init_std,
-            )
-
-        if hasattr(self, "output"):
-            nn.init.trunc_normal_(
-                self.output.weight,
-                mean=0.0,
-                std=init_std,
-                a=-3 * init_std,
-                b=3 * init_std,
+                std=patch_emb_std,
+                a=-3 * patch_emb_std,
+                b=3 * patch_emb_std,
             )
 
         if self.cross_attn_layers is not None:
@@ -193,15 +197,12 @@ class LocalModelBase(nn.Module):
                     InitStdFactor.DISABLED: 1.0,
                 }[self.init_std_factor]
 
-                layer.init_weights(init_std, factor)
+                layer.init_weights(None, factor)
 
 
 class LocalEncoder(LocalModelBase):
     def __init__(self, args: LocalModelArgs):
         super().__init__(args)
-        self.output_proj = (
-            args.patching_mode in ["entropy", "probmax"]
-        ) and args.entropy_model_checkpoint_dir is None
 
         self.apply_transformer = args.use_local_encoder_transformer
         self.downsampling_by_pooling = args.downsampling_by_pooling
@@ -210,6 +211,8 @@ class LocalEncoder(LocalModelBase):
         self.cross_attn_all_layers_encoder = args.cross_attn_all_layers_encoder
         self.cross_attn_init_by_pooling = args.cross_attn_init_by_pooling
         self.cross_attn_nheads = args.cross_attn_nheads
+
+        self.tok_embeddings = nn.Embedding(self.vocab_size, args.dim)
 
         if self.cross_attn_encoder:
             self.cross_attn_layers = torch.nn.ModuleList()
@@ -312,6 +315,8 @@ class LocalDecoder(LocalModelBase):
         self.cross_attn_all_layers_decoder = args.cross_attn_all_layers_decoder
         self.cross_attn_init_by_pooling = args.cross_attn_init_by_pooling
         self.cross_attn_nheads = args.cross_attn_nheads
+
+        self.norm = RMSNorm(args.dim, eps=args.norm_eps)
 
         if self.cross_attn_decoder:
             self.cross_attn_layers = torch.nn.ModuleList()

@@ -4,11 +4,11 @@
 import json
 import logging
 from collections import namedtuple
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Union
 
+import fsspec
 import torch
 import torch.nn as nn
 import wandb
@@ -49,27 +49,36 @@ class LoggingArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     freq: int = 10  # Log every freq optimizer steps
     acc_freq: int | None = None  # Log every acc_freq gradient accumulation steps
-
     wandb: WandbArgs | None = None
 
 
 class MetricLogger:
-    def __init__(self, outdir: Path, args: Any | None = None):
+    def __init__(
+        self,
+        outdir: Path,
+        # args: TrainArgs
+        args: Any | None = None,
+        fs: fsspec.AbstractFileSystem | None = None,
+    ):
         self.outdir = outdir
         self.jsonl_writer = None
+        self.fs = fs
         self.args = args
 
     def open(self):
         if self.jsonl_writer is None:
-            self.jsonl_writer = open(self.outdir, "a")
+            if self.fs is None:
+                self.jsonl_writer = open(self.outdir, "a")
+            else:
+                self.jsonl_writer = self.fs.open(self.outdir, "a")
         if (
             self.args is not None
             and self.args.logging.wandb is not None
             and get_is_master()
         ):
             run = wandb.init(
-                config=asdict(self.args),
-                **asdict(self.args.logging.wandb),
+                config=self.args.model_dump(),
+                **self.args.logging.wandb.model_dump(),
             )
 
     def log(self, metrics: dict[str, Any]):

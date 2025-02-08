@@ -78,10 +78,10 @@ class CrossAttention(nn.Module):
         # B S D
         bsz, seq_len, _ = x.shape
         _, slen_kv, _ = kv.shape
-        x = self.cross_attn_norm_q(x)
+        x_norm = self.cross_attn_norm_q(x)
         kv = self.cross_attn_norm_kv(kv)
 
-        xq = self.wq(x)
+        xq = self.wq(x_norm)
         xk = self.wk(kv)
         xv = self.wv(kv)
 
@@ -104,7 +104,7 @@ class CrossAttention(nn.Module):
         return x + output
 
     def init_weights(self, base_std: float, factor: float = 1.0):
-        std = base_std * factor
+        std = base_std or (self.dim ** (-0.5)) / factor
 
         nn.init.trunc_normal_(
             self.wq.weight,
@@ -130,13 +130,12 @@ class CrossAttention(nn.Module):
             b=3 * std,
         )
 
-        output_std = std / (2**0.5)
         nn.init.trunc_normal_(
             self.wo.weight,
             mean=0.0,
-            std=output_std,
-            a=-3 * output_std,
-            b=3 * output_std,
+            std=std,
+            a=-3 * std,
+            b=3 * std,
         )
         self.cross_attn_norm_q.reset_parameters()
         self.cross_attn_norm_kv.reset_parameters()
@@ -147,6 +146,7 @@ class GlobalTransformer(BaseTransformer):
         super().__init__(args)
         self.dropout = args.dropout
         self.eos_id = args.eos_id
+        self.dim_token_emb = args.dim_token_emb
 
         self.token_embedding_projection = None
         if args.dim_token_emb is not None and args.dim_token_emb != self.dim:
@@ -192,13 +192,14 @@ class GlobalTransformer(BaseTransformer):
         h = super().forward(h, tok_idx=tok_idx, mask=mask, attn_impl=self.attn_impl)
         return h, cache
 
-    def init_weights(self, init_base_std: float):
+    def init_weights(self):
         super().init_weights()
+        std = self.dim_token_emb ** (-0.5)
         if self.token_embedding_projection is not None:
             nn.init.trunc_normal_(
                 self.token_embedding_projection.weight,
                 mean=0.0,
-                std=init_base_std,
-                a=-3 * init_base_std,
-                b=3 * init_base_std,
+                std=std,
+                a=-3 * std,
+                b=3 * std,
             )

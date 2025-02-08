@@ -17,6 +17,7 @@ class PackingArgs(BaseModel):
     max_length: int | None
     pad_to_max_length: bool
     enable_byte_ngrams: bool
+    tokenizer_name: str
 
 
 class PackingIteratorState(BaseModel, IteratorState):
@@ -151,6 +152,43 @@ class PackingIterator(StatefulIterator[Batch, PackingIteratorState]):
         )
 
     def create_iter(self):
+        if self.packing_args.tokenizer_name == "bytes":
+            return self._create_iter_from_bytes()
+        else:
+            return self._create_iter_from_patch_lengths()
+
+    def _create_iter_from_bytes(self):
+        sequence_iter = self.sequence_iterator.create_iter()
+        batch_size = self.packing_args.batch_size
+        pad_id = self.packing_args.pad_id
+        seq_len = self.packing_args.seq_len
+        while True:
+            tokens: list[list[int]] = []
+            masks: list[list[bool]] = []
+
+            for _ in range(self.packing_args.batch_size):
+                sequence = next(sequence_iter)
+                _tokens = sequence.tokens
+                _mask = sequence.mask
+                assert (
+                    sequence.patch_lengths is None
+                ), "patch_lengths should not be used in byte packing"
+                tokens.append(_tokens)
+                masks.append(_mask)
+
+            x = np.full((batch_size, seq_len), fill_value=pad_id)
+            y = np.full((batch_size, seq_len), fill_value=pad_id)
+
+            for i, tok_seq in enumerate(tokens):
+                x[i, : len(tok_seq)] = tok_seq
+                y[i, : len(tok_seq) - 1] = tok_seq[1:]
+            batch = Batch(x=x, y=y)
+            assert (
+                batch.mask is None or np.sum(x != pad_id) == batch.mask.sum()
+            ), f"{np.sum(x != pad_id)} != {batch.mask.sum()}"
+            yield batch
+
+    def _create_iter_from_patch_lengths(self):
         sequence_iter = self.sequence_iterator.create_iter()
         batch_size = self.packing_args.batch_size
         pad_id = self.packing_args.pad_id
@@ -168,6 +206,10 @@ class PackingIterator(StatefulIterator[Batch, PackingIteratorState]):
                 _tokens = sequence.tokens
                 _mask = sequence.mask
                 _patch_lengths = sequence.patch_lengths
+                assert (
+                    _patch_lengths is not None
+                ), "patch lengths are required for packing based on patches."
+                # Reminder: seq_len is in terms of patches
                 assert len(sequence.patch_lengths) == self.packing_args.seq_len
                 last_patch_length = 0
                 if _patch_lengths[0] > 1:

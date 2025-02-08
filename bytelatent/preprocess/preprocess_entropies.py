@@ -15,29 +15,37 @@ from bytelatent.entropy_model import load_entropy_model
 from bytelatent.blt_tokenizers.build_tokenizer import TokenizerArgs
 
 
-def get_id_from_doc(doc: dict) -> int:
+def get_id_key(doc: dict) -> int:
     """
     We need a reliable way to ensure that samples from jsonl
     and arrow are the same, but there is no unique id field,
     so derive the best possible
     """
     if "sample_id" in doc:
-        sample_id = doc["sample_id"]
+        return "sample_id"
     elif "title" in doc:
-        sample_id = doc["title"]
+        return "title"
     elif "qid" in doc:
-        sample_id = doc["qid"]
+        return "qid"
     elif "paper_id" in doc:
-        sample_id = doc["paper_id"]
+        return "paper_id"
     elif "path" in doc:
-        sample_id = doc["path"]
+        return "path"
     elif "url" in doc:
-        sample_id = doc["url"]
+        return "url"
     elif "id" in doc:
-        sample_id = doc["id"]
+        return "id"
     else:
         raise ValueError(f"Could not find a id key from: {doc.keys()}")
-    return str(sample_id)
+
+
+def get_id_from_doc(doc: dict) -> int:
+    """
+    We need a reliable way to ensure that samples from jsonl
+    and arrow are the same, but there is no unique id field,
+    so derive the best possible
+    """
+    return str(doc[get_id_key(doc)])
 
 
 def get_text(doc: dict):
@@ -117,7 +125,7 @@ def main(
                         text = get_text(doc)
                         tokens = torch.tensor(tokenizer.encode(text))
                         patch_start = time.time()
-                        scores = calculate_entropies(
+                        scores, _ = calculate_entropies(
                             tokens,
                             entropy_model,
                             patching_batch_size,

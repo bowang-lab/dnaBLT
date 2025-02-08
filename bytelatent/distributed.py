@@ -127,6 +127,16 @@ def dist_max(x: Union[int, float], mesh: DeviceMesh = None):
     return tensor
 
 
+def dist_sum(
+    x: Union[int, float], mesh: DeviceMesh = None, reduce_dtype: torch.dtype = None
+):
+    tensor = torch.tensor(x).cuda()
+    if reduce_dtype is not None:
+        tensor = tensor.to(reduce_dtype)
+    dist.all_reduce(tensor, op=ReduceOp.SUM, group=mesh.get_group() if mesh else None)
+    return tensor
+
+
 def dist_mean(x: Union[int, float], mesh: DeviceMesh = None):
     tensor = torch.tensor(x).cuda()
     dist.all_reduce(tensor, op=ReduceOp.AVG, group=mesh.get_group() if mesh else None)
@@ -236,7 +246,7 @@ def setup_env(env_args: EnvironmentArgs):
             logger.warning(f"WARNING: Setting {name} to {value}")
 
 
-def setup_torch_distributed(dist_args):
+def setup_torch_distributed(dist_args: DistributedArgs):
     """
     Handle single and multi-GPU / multi-node / SLURM jobs.
     Initialize the following variables:
@@ -388,14 +398,14 @@ def clean_env():
 
 
 def parallelize_model(
-    model,
+    model: torch.nn.Module,
     device_mesh,
     model_args,
     distributed_args: DistributedArgs,
     fsdp_grouping_plan: Optional[List[Tuple[str, bool]]] = None,
     tp_parallelize=None,
     no_recompute_ops=None,
-):
+) -> torch.nn.Module:
     if distributed_args.tp_size > 1:
         assert (
             distributed_args.fsdp_type == "full_shard"
@@ -463,13 +473,21 @@ def parallelize_model(
         raise ValueError(f"Invalid fsdp_type: {distributed_args.fsdp_type}")
 
     if distributed_args.selective_activation_checkpointing:
-        model = checkpoint_wrapper(
-            model,
-            context_fn=partial(
-                create_selective_checkpoint_contexts,
-                get_default_policy(no_recompute_ops),
-            ),
-        )
+        # only works for blt models
+        # assuming that entropy models will not use checkpointing
+        for module in [
+            model.global_transformer,
+            model.local_encoder,
+            model.local_decoder,
+        ]:
+            for i in range(len(module.layers)):
+                module.layers[i] = checkpoint_wrapper(
+                    module.layers[i],
+                    context_fn=partial(
+                        create_selective_checkpoint_contexts,
+                        get_default_policy(no_recompute_ops),
+                    ),
+                )
 
     if distributed_args.compile:
         torch._dynamo.config.cache_size_limit = (

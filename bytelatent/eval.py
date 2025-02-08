@@ -4,20 +4,20 @@ import json
 import logging
 import os
 from collections import defaultdict
-from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any
 
 import torch
-from lingua.args import dump_config
-from lingua.data import init_choice_state, setup_sources
 from lm_eval import simple_evaluate
 from lm_eval.api.instance import Instance
 from lm_eval.api.model import LM
 from omegaconf import OmegaConf
+from pydantic import BaseModel, ConfigDict
 
+from bytelatent.args import EvalArgs, ValidationArgs, parse_args
 from bytelatent.checkpoint import CONSOLIDATE_FOLDER, consolidate_checkpoints
+from bytelatent.data.file_util import get_fs
 from bytelatent.distributed import (
     DistributedArgs,
     dist_mean_dict,
@@ -25,70 +25,15 @@ from bytelatent.distributed import (
     get_world_size,
     setup_torch_distributed,
 )
-from bytelatent.transformer import LMTransformer, LMTransformerArgs
-
-from apps.main.generate import (
+from bytelatent.generate import (
     PackedCausalTransformerGenerator,
-    PackedCausalTransformerGeneratorArgs,
     load_consolidated_model_and_tokenizer,
 )
+from bytelatent.transformer import LMTransformer, LMTransformerArgs
 
 EVAL_FOLDER_NAME = "{:010d}"
 
 logger = logging.getLogger()
-
-
-@dataclass
-class LMHarnessArgs:
-    tasks: Optional[List[Any]] = None
-    num_fewshot: Optional[int] = None
-    device: Optional[str] = None
-    use_cache: Optional[str] = None
-    cache_requests: bool = False
-    rewrite_requests_cache: bool = False
-    delete_requests_cache: bool = False
-    limit: Optional[Union[int, float]] = None
-    bootstrap_iters: int = 100000
-    check_integrity: bool = False
-    write_out: bool = False
-    log_samples: bool = True
-    system_instruction: Optional[str] = None
-    apply_chat_template: Union[bool, str] = False
-    fewshot_as_multiturn: bool = False
-    gen_kwargs: Optional[str] = None
-    verbosity: str = "INFO"
-    predict_only: bool = False
-    random_seed: int = 0
-    numpy_random_seed: int = 1234
-    torch_random_seed: int = 1234
-    fewshot_random_seed: int = 1234
-
-
-@dataclass
-class ValidationArgs:
-    max_steps: Optional[int] = (
-        None  # If None the whole validation file is used -> /!\ This number of steps is gpu dependent (100 max steps on 8 gpus = 800 steps on 1 gpu)
-    )
-    use_val_from_train_src: bool = True  # Use the validation set from training sources
-    root_dir: str = ""
-    sources: List[str] = field(default_factory=list)  # Other sources to eval on
-
-
-@dataclass
-class EvalArgs:
-    name: str = "evals"
-    dump_dir: Optional[str] = None
-    metric_log_dir: Optional[str] = None
-    ckpt_dir: str = ""
-    generator: PackedCausalTransformerGeneratorArgs = field(
-        default_factory=PackedCausalTransformerGeneratorArgs
-    )
-    harness: Optional[LMHarnessArgs] = field(default_factory=LMHarnessArgs)
-    validation: Optional[ValidationArgs] = field(default_factory=ValidationArgs)
-
-    wandb: Optional[Any] = None
-
-    global_step: Optional[int] = None  # for in-training evaluation
 
 
 def all_dicts_same(dict_list):
@@ -120,7 +65,7 @@ class EvalHarnessLM(LM):
         self._world_size = get_world_size()
         self.device = generator.device
 
-    def generate_until(self, requests: List[Instance]) -> List[str]:
+    def generate_until(self, requests: list[Instance]) -> list[str]:
         prompts, gen_args = zip(*[req.args for req in requests])
         assert all_dicts_same(gen_args), "Doesn't support different gen args for now"
         gen_args = gen_args[0]
@@ -141,7 +86,7 @@ class EvalHarnessLM(LM):
             filtered_gen.append(g)
         return filtered_gen
 
-    def loglikelihood(self, requests: List[Instance]) -> List[Tuple[float, bool]]:
+    def loglikelihood(self, requests: list[Instance]) -> list[tuple[float, bool]]:
         prompts, continuations = zip(*[req.args for req in requests])
         inputs = [req.args[0] + req.args[1] for req in requests]
         max_gen_len = self.generator.max_gen_len
@@ -158,7 +103,7 @@ class EvalHarnessLM(LM):
         self.generator.max_gen_len = max_gen_len
         return results
 
-    def loglikelihood_rolling(self, requests: List[Instance]) -> List[float]:
+    def loglikelihood_rolling(self, requests: list[Instance]) -> list[float]:
         prompts = [req.args[0] for req in requests]
         max_gen_len = self.generator.max_gen_len
         # We temporarily lower max gen len
@@ -232,68 +177,73 @@ def eval_on_val(generator, val_args: ValidationArgs, train_cfg):
     return all_val_metrics
 
 
-def launch_eval(cfg: EvalArgs):
+def launch_eval(eval_args: EvalArgs):
     if not torch.distributed.is_initialized():
         setup_torch_distributed(DistributedArgs())
+
+    fs = get_fs(eval_args.ckpt_dir, s3_profile=eval_args.s3_profile)
     if (
-        Path(cfg.ckpt_dir).exists()
-        and (Path(cfg.ckpt_dir) / "params.json").exists()
-        and next(Path(cfg.ckpt_dir).glob("*.pth"), None) is not None
+        fs.exists(eval_args.ckpt_dir)
+        and fs.exists(os.path.join(eval_args.ckpt_dir, "params.json"))
+        and len(fs.glob(os.path.join(eval_args.ckpt_dir, "*.pth"))) != 0
     ):
-        consolidate_path = Path(cfg.ckpt_dir)
+        consolidate_path = eval_args.ckpt_dir
     else:
-        consolidate_path = Path(cfg.ckpt_dir) / CONSOLIDATE_FOLDER
-        if not consolidate_path.exists() and get_global_rank() == 0:
-            consolidate_path = consolidate_checkpoints(cfg.ckpt_dir)
+        consolidate_path = os.path.join(eval_args.ckpt_dir, CONSOLIDATE_FOLDER)
+        if not fs.exists(consolidate_path) and get_global_rank() == 0:
+            consolidate_path = consolidate_checkpoints(eval_args.ckpt_dir)
 
-    Path(cfg.dump_dir).mkdir(parents=True, exist_ok=True)
-    dump_config(cfg, Path(cfg.dump_dir) / "config.yaml", log_config=False)
+    fs.mkdirs(eval_args.dump_dir, exist_ok=True)
+    with fs.open(os.path.join(eval_args.dump_dir, "config.yaml"), "w") as f:
+        f.write(eval_args.model_dump_json())
 
-    consolidate_path = str(consolidate_path)
     torch.distributed.barrier()
     logger.info("Loading model")
+    # TODO: Make this general so that it works with either
+    # LMTransformer or Blt, similar with args
     model, tokenizer, train_cfg = load_consolidated_model_and_tokenizer(
         consolidate_path,
-        model_cls=LMTransformer,
-        model_args_cls=LMTransformerArgs,
     )
     logger.info("Model loaded")
     model.eval()
-    generator = PackedCausalTransformerGenerator(cfg.generator, model, tokenizer)
+    generator = PackedCausalTransformerGenerator(eval_args.generator, model, tokenizer)
 
     wrap = EvalHarnessLM(generator)
-    results = simple_evaluate(wrap, **asdict(cfg.harness))
+    # Redo
+    results = simple_evaluate(wrap, eval_args.harness.model_dump())
     val_results = None
-    if cfg.validation:
-        val_results = eval_on_val(generator, cfg.validation, train_cfg)
+    if eval_args.validation:
+        val_results = eval_on_val(generator, eval_args.validation, train_cfg)
     if get_global_rank() == 0:
-        with open(Path(cfg.dump_dir) / "results.json", "w") as f:
+        with fs.open(os.path.join(eval_args.dump_dir, "results.json"), "w") as f:
             f.write(json.dumps(results))
         logger.info(f"All evaluation results: {results['results']}")
         if val_results is not None:
-            with open(Path(cfg.dump_dir) / "validation.json", "w") as f:
+            with fs.open(os.path.join(eval_args.dump_dir, "validation.json"), "w") as f:
                 f.write(json.dumps(val_results))
             logger.info(f"All validation results: {val_results}")
-    if cfg.metric_log_dir and get_global_rank() == 0:
-        metric_log_path = Path(cfg.metric_log_dir) / "metrics.eval.jsonl"
+    if eval_args.metric_log_dir and get_global_rank() == 0:
+        metric_log_path = os.path.join(eval_args.metric_log_dir, "metrics.eval.jsonl")
 
         logger.info(f"Writing metric logs to {metric_log_path}")
         timestamp = {
             "created_at": datetime.utcnow().isoformat(),
         }
-        if cfg.global_step is not None:
-            timestamp["global_step"] = cfg.global_step
+        if eval_args.global_step is not None:
+            timestamp["global_step"] = eval_args.global_step
         print(
             json.dumps(timestamp | results["results"]),
-            file=open(metric_log_path, mode="a"),
+            file=fs.open(metric_log_path, mode="a"),
             flush=True,
         )
 
-        val_log_path = Path(cfg.metric_log_dir) / "metrics.validation.jsonl"
+        val_log_path = os.path.join(
+            eval_args.metric_log_dir, "metrics.validation.jsonl"
+        )
         if val_results is not None:
             print(
                 json.dumps(timestamp | val_results),
-                file=open(val_log_path, mode="a"),
+                file=fs.open(val_log_path, mode="a"),
                 flush=True,
             )
 
@@ -301,53 +251,8 @@ def launch_eval(cfg: EvalArgs):
 
 
 def main():
-    """
-    The command line interface here uses OmegaConf https://omegaconf.readthedocs.io/en/2.3_branch/usage.html#from-command-line-arguments
-    This accepts arguments as a dot list
-    So if the dataclass looks like
-
-    @dataclass
-    class DummyArgs:
-        name: str
-        model: LMTransformerArgsgs
-
-    @dataclass
-    class LMTransformerArgsgs:
-        dim: int
-
-    Then you can pass model.dim=32 to change values in LMTransformerArgsgs
-    or just name=tictac for top level attributes.
-
-    The behavior here is as follows:
-    1. We instantiate EvalArgs with its default values
-    2. We override those default values with the ones in the provided config file
-    3. We override the result with the additional arguments provided through command line
-
-    For example, if the config is the following
-
-    model:
-        dim: 128
-        n_layers: 4
-
-    and you call eval.py with eval.py model.dim=64
-
-    Then the final TrainArgs will have
-
-    model:
-        dim: 64
-        n_layers: 4
-
-    Plus all the default values in EvalArgs dataclass.
-    """
-    cli_args = OmegaConf.from_cli()
-    file_cfg = OmegaConf.load(cli_args.config)
-    # We remove 'config' attribute from config as the underlying DataClass does not have it
-    del cli_args.config
-
-    default_cfg = OmegaConf.structured(EvalArgs())
-    cfg = OmegaConf.merge(default_cfg, file_cfg, cli_args)
-    cfg = OmegaConf.to_object(cfg)
-    launch_eval(cfg)
+    eval_args = parse_args(EvalArgs)
+    launch_eval(eval_args)
 
 
 if __name__ == "__main__":

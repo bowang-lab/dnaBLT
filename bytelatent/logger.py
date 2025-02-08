@@ -6,6 +6,8 @@ import sys
 import time
 from datetime import timedelta
 
+import fsspec
+
 from bytelatent.distributed import get_global_rank, get_is_slurm_job
 
 
@@ -92,6 +94,7 @@ def init_logger(
     *,
     name: str | None = None,
     level: str = "INFO",
+    fs: fsspec.AbstractFileSystem | None = None,
 ):
     """
     Setup logging.
@@ -121,7 +124,11 @@ def init_logger(
 
     if log_file is not None and get_global_rank() == 0:
         # build file handler
-        file_handler = logging.FileHandler(log_file, "a")
+        if fs is None:
+            file_handler = logging.FileHandler(log_file, "a")
+        else:
+            file_stream = fs.open(log_file, mode="a")
+            file_handler = logging.StreamHandler(file_stream)
         file_handler.setLevel(logging.NOTSET)
         file_handler.setFormatter(LogFormatter())
         # update logger

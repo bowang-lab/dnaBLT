@@ -70,15 +70,22 @@ class SequenceIterator(StatefulIterator):
         for example in example_iter:
             assert example.tokens is not None
             assert example.mask is not None
-            assert example.patch_lengths is not None
+            if self.preprocess_iterator.add_patches:
+                assert example.patch_lengths is not None
+                assert len(example.tokens) == sum(example.patch_lengths)
+            else:
+                assert example.patch_lengths is None
             assert len(example.tokens) != 0
             assert len(example.mask) != 0
             assert len(example.tokens) == len(example.mask)
-            assert len(example.tokens) == sum(example.patch_lengths)
 
             tokens.extend(example.tokens)
             mask.extend(example.mask)
-            patch_lengths.extend(example.patch_lengths)
+            if self.preprocess_iterator.add_patches:
+                patch_lengths.extend(example.patch_lengths)
+            else:
+                # This lets the rest of the code work as expected and just yield byte seqs
+                patch_lengths.extend([1] * len(example.tokens))
 
             while len(patch_lengths) >= n_buffer_patches:
                 if first:
@@ -115,8 +122,15 @@ class SequenceIterator(StatefulIterator):
                         == len(seq_mask[idx])
                     ), f"{sum(seq_patch_lengths[idx])}, {len(seq_tokens[idx])} {len(seq_mask[idx])}, idx={idx}"
                     assert seq_patch_lengths[idx][0] > 0, f"{seq_patch_lengths[idx]}"
-                    yield BltSequence(
-                        tokens=seq_tokens[idx],
-                        mask=seq_mask[idx],
-                        patch_lengths=seq_patch_lengths[idx],
-                    )
+                    if self.preprocess_iterator.add_patches:
+                        yield BltSequence(
+                            tokens=seq_tokens[idx],
+                            mask=seq_mask[idx],
+                            patch_lengths=seq_patch_lengths[idx],
+                        )
+                    else:
+                        yield BltSequence(
+                            tokens=seq_tokens[idx],
+                            mask=seq_mask[idx],
+                            patch_lengths=None,
+                        )

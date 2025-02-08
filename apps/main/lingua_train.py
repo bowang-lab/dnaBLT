@@ -544,7 +544,7 @@ def train(args: TrainArgs):
             if args.eval is not None and every_n_steps(
                 train_state, args.checkpoint.eval.every, acc_step=0
             ):
-                from apps.main.eval import EVAL_FOLDER_NAME, EvalArgs, launch_eval
+                from bytelatent.eval import EVAL_FOLDER_NAME, EvalArgs, launch_eval
 
                 eval_args = dataclass_from_dict(EvalArgs, args.eval)
 

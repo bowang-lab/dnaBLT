@@ -2,6 +2,7 @@
 import math
 import time
 from collections import defaultdict
+from contextlib import nullcontext
 from enum import Enum
 
 import torch
@@ -21,6 +22,8 @@ class PatchingModeEnum(str, Enum):
     bpe = "bpe"
     bpe_patcher = "bpe_patcher"
     space = "space"
+    static = "static"
+    byte = "byte"
 
 
 class PatcherArgs(BaseModel):
@@ -33,7 +36,6 @@ class PatcherArgs(BaseModel):
     max_patch_length: int | None = None
     patch_size: float = 4.5
     patching_batch_size: int = 1
-    data_loader_patching: bool = False
     device: str = "cuda"
     monotonicity: bool = False
     log_time: bool = False
@@ -58,7 +60,11 @@ def entropy(scores):
 
 
 def calculate_entropies(
-    tokens: torch.tensor, entropy_model, patching_batch_size, device: str | None = None
+    tokens: torch.tensor,
+    entropy_model,
+    patching_batch_size,
+    device: str | None = None,
+    enable_grad: bool = False,
 ):
     """
     tokens: 2D tensor of shape [batch_size, seq_len]
@@ -67,8 +73,12 @@ def calculate_entropies(
     Splits the tokens into chunks of size max_length and calculates entropies for each chunk.
     Entropy model can be executed on cpu or gpu, specify either 'cuda' or 'cpu' in the device argument.
     """
-    with torch.no_grad():
+
+    grad_context = nullcontext() if enable_grad else torch.no_grad()
+
+    with grad_context:
         entropies = []
+        preds = []
         max_length = getattr(entropy_model, "max_length", 8192)
         batch_numel = max_length * patching_batch_size
         splits = torch.split(tokens.flatten(), batch_numel)
@@ -86,12 +96,15 @@ def calculate_entropies(
             pred = pred.reshape(-1, pred.shape[-1])[
                 : split.numel() - pad_size, :
             ]  # [batch_size * seq_len, vocab]
+            preds.append(pred)
             pred_entropies = entropy(pred)
             entropies.append(pred_entropies)
 
         concat_entropies = torch.cat(entropies, dim=0)
         concat_entropies = concat_entropies.reshape(tokens.shape)
-    return concat_entropies
+        concat_preds = torch.cat(preds, dim=0)
+        concat_preds = concat_preds.reshape(tokens.shape[0], tokens.shape[1], -1)
+    return concat_entropies, concat_preds
 
 
 def patch_start_mask_from_entropy_with_monotonicity(entropies, t):
@@ -101,6 +114,10 @@ def patch_start_mask_from_entropy_with_monotonicity(entropies, t):
     returns [bs, seq_len] mask where True indicates the start of a patch
     """
     bs, seq_len = entropies.shape
+
+    if seq_len == 0:
+        return entropies > t
+
     mask = torch.zeros_like(entropies, dtype=torch.bool)
     mask[:, 0] = True
 
@@ -123,6 +140,10 @@ def patch_start_mask_global_and_monotonicity(entropies, t, t_add=0):
     returns [bs, seq_len] mask where True indicates the start of a patch
     """
     bs, seq_len = entropies.shape
+
+    if seq_len == 0:
+        return entropies > t
+
     mask = torch.zeros_like(entropies, dtype=torch.bool)
     mask[:, 0] = True
 
@@ -466,7 +487,6 @@ class Patcher:
         self.max_patch_length = patcher_args.max_patch_length
         self.patch_size = patcher_args.patch_size
         self.patching_batch_size = patcher_args.patching_batch_size
-        self.data_loader_patching = patcher_args.data_loader_patching
         self.device = patcher_args.device
         self.monotonicity = patcher_args.monotonicity
         self.log_time = patcher_args.log_time
@@ -508,7 +528,7 @@ class Patcher:
         seq_len_next_tok = seq_len + 1 if include_next_token else seq_len
         scores = None
         # STATIC
-        if self.patching_mode is None:
+        if self.patching_mode == PatchingModeEnum.static:
             patch_lengths = torch.zeros(
                 (bs, math.ceil(seq_len_next_tok / self.patch_size)),
                 dtype=tokens.dtype,
@@ -516,17 +536,21 @@ class Patcher:
             ).fill_(self.patch_size)
             if seq_len_next_tok % self.patch_size != 0:
                 patch_lengths[:, -1] = seq_len_next_tok % self.patch_size
+        elif self.patching_mode == PatchingModeEnum.byte:
+            patch_lengths = torch.ones(
+                (bs, seq_len_next_tok), dtype=tokens.dtype, device=tokens.device
+            )
         # ENTROPY
         elif self.patching_mode == PatchingModeEnum.entropy:
             if self.log_time:
                 s = time.time()
             if entropies is not None:
-                scores = torch.tensor(entropies, dtype=torch.float32)
+                scores = entropies.to(dtype=torch.float32)
             elif preds is not None:
                 scores = entropy(preds)
             else:
                 start_entropies = time.time()
-                scores = calculate_entropies(
+                scores, _ = calculate_entropies(
                     tokens,
                     self.entropy_model,
                     self.patching_batch_size,

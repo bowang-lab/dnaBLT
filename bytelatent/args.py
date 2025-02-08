@@ -1,19 +1,20 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
+import json
 import logging
 import os
 from typing import Any
 
+import fsspec
 import numpy as np
 import yaml
+from omegaconf import OmegaConf
 from pydantic import BaseModel, ConfigDict
 
 from bytelatent.checkpoint import CheckpointArgs
 from bytelatent.data.data_types import Batch
+from bytelatent.data.file_util import get_fs
 from bytelatent.data.iterators.abstract_iterator import StatefulIterator
-from bytelatent.data.iterators.arrow_iterator import (
-    ArrowFileIterator,
-    find_and_sanitize_chunks,
-)
+from bytelatent.data.iterators.arrow_iterator import ArrowFileIterator
 from bytelatent.data.iterators.looping_iterator import LoopingIterator
 from bytelatent.data.iterators.multiprocess_iterator import MultiprocessIterator
 from bytelatent.data.iterators.packing_iterator import PackingArgs, PackingIterator
@@ -39,6 +40,46 @@ def get_rng_state(seed: int, rank: int, world_size: int) -> dict[str, Any]:
     return np.random.default_rng((seed, rank, world_size)).bit_generator.state
 
 
+def parse_args(args_cls):
+    cli_args = OmegaConf.from_cli()
+    file_cfg = OmegaConf.load(cli_args.config)
+    # We remove 'config' attribute from config as the underlying DataClass does not have it
+    del cli_args.config
+
+    default_cfg = OmegaConf.create(args_cls().model_dump())
+    cfg = OmegaConf.merge(default_cfg, file_cfg, cli_args)
+    cfg = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
+    pydantic_args = args_cls.model_validate(cfg)
+    return pydantic_args
+
+
+TRAIN_DATA_FILE_PATTERN = "*.chunk.*.jsonl"
+
+
+def find_and_sanitize_chunks(
+    dataset_path: str,
+    world_size: int,
+    file_pattern: str,
+    s3_profile: str | None = None,
+):
+    fs = get_fs(dataset_path, s3_profile=s3_profile)
+    path_with_glob = os.path.join(dataset_path, file_pattern)
+    dataset_chunks = fs.glob(path_with_glob)
+    n_chunks = len(dataset_chunks)
+
+    if n_chunks > world_size:
+        n_discard = n_chunks - world_size
+        dataset_chunks = dataset_chunks[:world_size]
+    else:
+        assert (
+            world_size % n_chunks == 0
+        ), "World size should be a multiple of number of chunks"
+
+    assert n_chunks > 0, f"No valid chunks in {dataset_path}"
+
+    return dataset_chunks
+
+
 def distribute_data_to_rank(
     *,
     dataset_path: str,
@@ -48,9 +89,10 @@ def distribute_data_to_rank(
     rank: int,
     world_size: int,
     s3_profile: str | None = None,
+    file_pattern: str = TRAIN_DATA_FILE_PATTERN,
 ) -> ArrowFileIterator:
     dataset_chunks = find_and_sanitize_chunks(
-        dataset_path, world_size, s3_profile=s3_profile
+        dataset_path, world_size, file_pattern, s3_profile=s3_profile
     )
     n_workers_per_chunk = world_size // len(dataset_chunks)
     rank_to_arrow_iterator_params = []
@@ -69,6 +111,22 @@ def distribute_data_to_rank(
                 )
             )
     return rank_to_arrow_iterator_params[rank]
+
+
+class PackedCausalTransformerGeneratorArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    temperature: float = 0.0
+    top_p: float | None = None
+    top_k: float | None = None
+    max_gen_len: int = 512  # Maximum number of tokens to generate
+    max_tokens: int = 1024  # Maximum number of tokens that can go through the model
+    max_prompt_len: int | None = None
+    until: list[str] = []
+    compile_prefilling: bool = False
+    reduce_generation_overhead: bool = False
+    show_progress: bool = False
+    dtype: str | None = "bf16"
+    device: str | None = "cuda"
 
 
 class DataloaderArgs(BaseModel):
@@ -92,6 +150,8 @@ class DataloaderArgs(BaseModel):
     pad_to_max_length: bool = True
     max_encoder_seq_length: int = 12288
     enable_byte_ngrams: bool = False
+
+    add_patches: bool = True
 
     tokenizer_args: TokenizerArgs = TokenizerArgs()
     patcher_args: PatcherArgs = PatcherArgs()
@@ -120,6 +180,7 @@ class DataloaderArgs(BaseModel):
                 looping_iterator,
                 patcher_args=self.patcher_args,
                 tokenizer_args=self.tokenizer_args,
+                add_patches=self.add_patches,
             )
             sequence_iterator = SequenceIterator(
                 preprocess_iterator,
@@ -141,20 +202,80 @@ class DataloaderArgs(BaseModel):
             source_to_iterator=source_to_sequence_iterators,
         )
         tokenizer = self.tokenizer_args.build()
+        if self.tokenizer_args.name == "bytes":
+            # TODO: Check this with Artidoro
+            pad_id = 0
+        else:
+            pad_id = tokenizer.boe_id
         packing_args = PackingArgs(
             batch_size=self.batch_size,
             seq_len=self.seq_len,
-            pad_id=tokenizer.boe_id,
+            pad_id=pad_id,
             max_length=self.max_encoder_seq_length,
             pad_to_max_length=self.pad_to_max_length,
             enable_byte_ngrams=self.enable_byte_ngrams,
+            tokenizer_name=self.tokenizer_args.name,
         )
         packing_iterator = PackingIterator(sampling_iterator, packing_args=packing_args)
-        mp_iterator = MultiprocessIterator(
-            packing_iterator, n_batches_to_prefetch=self.prefetch_size
-        )
+        if self.load_async:
+            mp_iterator = MultiprocessIterator(
+                packing_iterator, n_batches_to_prefetch=self.prefetch_size
+            )
+            return mp_iterator
+        else:
+            return packing_iterator
 
-        return mp_iterator
+
+class LMHarnessArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tasks: list[Any] | None = None
+    num_fewshot: int | None = None
+    device: str | None = None
+    use_cache: str | None = None
+    cache_requests: bool = False
+    rewrite_requests_cache: bool = False
+    delete_requests_cache: bool = False
+    limit: int | float | None = None
+    bootstrap_iters: int = 100000
+    check_integrity: bool = False
+    write_out: bool = False
+    log_samples: bool = True
+    system_instruction: str | None = None
+    apply_chat_template: bool | str = False
+    fewshot_as_multiturn: bool = False
+    gen_kwargs: str | None = None
+    verbosity: str = "INFO"
+    predict_only: bool = False
+    random_seed: int = 0
+    numpy_random_seed: int = 1234
+    torch_random_seed: int = 1234
+    fewshot_random_seed: int = 1234
+
+
+class ValidationArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_steps: int | None = (
+        None  # If None the whole validation file is used -> /!\ This number of steps is gpu dependent (100 max steps on 8 gpus = 800 steps on 1 gpu)
+    )
+    use_val_from_train_src: bool = True  # Use the validation set from training sources
+    root_dir: str = ""
+    sources: list[str] = []  # Other sources to eval on
+
+
+class EvalArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    dump_dir: str
+    ckpt_dir: str
+    metric_log_dir: str | None = None
+    generator: PackedCausalTransformerGeneratorArgs = (
+        PackedCausalTransformerGeneratorArgs()
+    )
+
+    harness: LMHarnessArgs | None = LMHarnessArgs()
+    validation: ValidationArgs | None = ValidationArgs()
+
+    global_step: int | None = None  # for in-training evaluation
+    s3_profile: str | None = None
 
 
 class TrainArgs(BaseModel):
@@ -175,10 +296,13 @@ class TrainArgs(BaseModel):
 
     # Nb optimizer steps to take
     steps: int = 1000
+    # If not None, halt training after this many steps,
+    # useful for debugging
+    max_steps: int | None = None
 
     data: DataloaderArgs = DataloaderArgs()
     optim: OptimArgs = OptimArgs()
-    model: ByteLatentTransformerArgs = ByteLatentTransformerArgs()
+    model: ByteLatentTransformerArgs | None = ByteLatentTransformerArgs()
     # This is only needed for training the entropy model
     entropy_model: LMTransformerArgs | None = None
     # Instead of training main model, train entropy model
@@ -192,12 +316,20 @@ class TrainArgs(BaseModel):
 
     # If set to None, eval is run locally otherwise it launches a new job with the given number of gpus
     async_eval_gpus: int | None = None
-    eval: Any | None = None
+    eval: EvalArgs | None = None
     eval_on_gpus: int | None = None
 
     def dump_to_yaml_file(
         self, path: str, log_config: bool = True, sort_keys: bool = True
     ):
+        yaml_str = self.dump_to_yaml_str(sort_keys=sort_keys)
+        with open(path, "w") as f:
+            if log_config:
+                logger.info("Using the following config for this run:")
+                logger.info(yaml_str)
+            f.write(yaml_str)
+
+    def dump_to_yaml_str(self, sort_keys: bool = True):
         model_dict = self.model_dump(mode="json")
         yaml_str = yaml.dump(
             model_dict,
@@ -205,8 +337,4 @@ class TrainArgs(BaseModel):
             sort_keys=sort_keys,
             default_flow_style=False,
         )
-        with open(path, "w") as f:
-            if log_config:
-                logger.info("Using the following config for this run:")
-                logger.info(yaml_str)
-            f.write(yaml_str)
+        return yaml_str

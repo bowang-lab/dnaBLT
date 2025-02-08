@@ -3,33 +3,40 @@
 
 import gc
 import logging
+import math
 import os
 import sys
 from contextlib import ExitStack
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-from pathlib import Path
 from timeit import default_timer as timer
-from typing import Any, Dict, Type, TypeVar
+from typing import Any, TypeVar
 
+import numpy as np
 import torch
 import torch.distributed
 import torch.nn.functional
 import torch.nn.functional as F
 import wandb
 import xformers.profiler
-from omegaconf import OmegaConf
 from torch.distributed._tensor import DTensor
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.optim import lr_scheduler
 
-from bytelatent.args import TrainArgs
+from bytelatent.args import TrainArgs, parse_args
 from bytelatent.checkpoint import CheckpointManager, load_from_checkpoint
-from bytelatent.data.data_types import DataLoaderState
+from bytelatent.data.file_util import get_fs
+from bytelatent.data.iterators.multiprocess_iterator import (
+    MultiprocessIterator,
+    MultiprocessIteratorState,
+)
+from bytelatent.data.iterators.packing_iterator import PackingIteratorState
 from bytelatent.distributed import (
     check_model_value_range,
     clean_env,
+    dist_mean,
     dist_mean_dict,
+    dist_sum,
     get_device_mesh,
     get_is_master,
     get_world_size,
@@ -39,14 +46,17 @@ from bytelatent.distributed import (
     setup_env,
     setup_torch_distributed,
 )
+from bytelatent.eval import EVAL_FOLDER_NAME, launch_eval
 from bytelatent.logger import init_logger
 from bytelatent.metrics import GPUMemoryMonitor, MetricLogger, get_num_params
 from bytelatent.model.blt import ByteLatentTransformer
+from bytelatent.norms import fixed_clip_grad_norm_
 from bytelatent.optim import build_optimizer
 from bytelatent.probe import AutoProbeD
 from bytelatent.profiling import maybe_run_profiler
 from bytelatent.stool import StoolArgs, launch_job
 from bytelatent.transformer import (
+    LMTransformer,
     build_fsdp_grouping_plan,
     get_no_recompute_ops,
     get_num_flop_per_token,
@@ -69,53 +79,72 @@ def flatten_dict(d, parent_key="", sep="_"):
     return dict(items)
 
 
-def dataclass_from_dict(cls: Type[T], data: dict, strict: bool = True) -> T:
-    """
-    Converts a dictionary to a dataclass instance, recursively for nested structures.
-    """
-    base = OmegaConf.structured(cls())
-    OmegaConf.set_struct(base, strict)
-    override = OmegaConf.create(data)
-    return OmegaConf.to_object(OmegaConf.merge(base, override))
+def get_iterator_state_name(iterator_state):
+    if isinstance(iterator_state, MultiprocessIteratorState):
+        return "multiprocess"
+    elif isinstance(iterator_state, PackingIteratorState):
+        return "packing"
+    else:
+        raise ValueError(f"Unsupported iterator to get name from: {iterator_state}")
 
 
+# TODO: Make this pydantic based instead of data class based
+# TODO: Generalize this to any iterator state
 @dataclass
 class TrainState(Stateful):
     step: int  # Nb of steps taken by the optimizer
     acc_step: int  # Nb of accumulation steps done since last optimizer step
     scheduler: lr_scheduler.LambdaLR
-    data_loader_state: DataLoaderState
+    data_loader_state: MultiprocessIteratorState | PackingIteratorState
     scale: float = 1.0
+    data_loader_class: str | None = None
 
-    def state_dict(self) -> Dict[str, Any]:
+    def state_dict(self) -> dict[str, Any]:
         return {
             "step": self.step,
             "acc_step": self.acc_step,
-            "data_loader_state": self.data_loader_state.dict(),
+            "data_loader_state": self.data_loader_state.model_dump(),
+            "data_loader_class": get_iterator_state_name(self.data_loader_state),
             "scheduler": self.scheduler.state_dict(),
         }
 
     def load_state_dict(self, state_dict):
         self.step = state_dict["step"]
         self.acc_step = state_dict["acc_step"]
-        self.data_loader_state = DataLoaderState(**state_dict["data_loader_state"])
+        self.data_loader_class = state_dict["data_loader_class"]
+        if self.data_loader_class == "multiprocess":
+            self.data_loader_state = MultiprocessIteratorState(
+                **state_dict["data_loader_state"]
+            )
+        elif self.data_loader_class == "packing":
+            self.data_loader_state = PackingIteratorState(
+                **state_dict["data_loader_state"]
+            )
+        else:
+            raise ValueError(f"invalid data loader class: {self.data_loader_class}")
         self.scheduler.load_state_dict(state_dict["scheduler"])
 
 
 def validate_train_args(args: TrainArgs, output_size: int):
-    if args.model.vocab_size < 0:
+    assert args.model is not None or args.entropy_model is not None
+    if args.model is not None:
         logger.info(f"Setting model output size to {args.model.vocab_size}")
         args.model.vocab_size = output_size
+
+    if args.entropy_model is not None:
+        logger.info(f"Setting model output size to {args.entropy_model.vocab_size}")
+        args.entropy_model.vocab_size = output_size
 
     assert args.dump_dir, "Dump dir not set"
 
     if args.checkpoint.path is None:
         logger.info(f"Setting checkpoint path to {args.checkpoint.path}")
-        args.checkpoint.path = str(Path(args.dump_dir) / "checkpoints")
+        args.checkpoint.path = os.path.join(args.dump_dir, "checkpoints")
 
+    data_fs = get_fs(args.data.root_dir, s3_profile=args.data.s3_profile)
     for source in args.data.sources:
         data_path = os.path.join(args.data.root_dir, source)
-        assert os.path.exists(data_path), f"{data_path} doesn't exist"
+        assert data_fs.exists(data_path), f"{data_path} doesn't exist"
 
     if (
         args.distributed.dp_replicate
@@ -123,9 +152,26 @@ def validate_train_args(args: TrainArgs, output_size: int):
         * args.distributed.tp_size
         != get_world_size()
     ):
+        logging.info("Modifying TrainArgs distributed config")
         assert get_world_size() % args.distributed.dp_shard == 0
+        logging.info("World size: %s", get_world_size())
+        logging.info(
+            "Existing setting: train_args.distributed.dp_shard=%s",
+            args.distributed.dp_shard,
+        )
+        logging.info(
+            "Setting train_args.distributed.dp_replicate=%s, was dp_replicate=%s",
+            get_world_size() // args.distributed.dp_shard,
+            args.distributed.dp_replicate,
+        )
         args.distributed.dp_replicate = get_world_size() // args.distributed.dp_shard
 
+        logging.info(
+            "Changing dp_replicate from %s to %s, to account for tp_size=%s",
+            args.distributed.dp_replicate,
+            args.distributed.dp_replicate // args.distributed.tp_size,
+            args.distributed.tp_size,
+        )
         assert args.distributed.dp_replicate % args.distributed.tp_size == 0
         args.distributed.dp_replicate = (
             args.distributed.dp_replicate // args.distributed.tp_size
@@ -147,7 +193,10 @@ def validate_train_args(args: TrainArgs, output_size: int):
                 and args.distributed.dp_replicate == get_world_size()
             )
 
-    args.model.max_seqlen = args.data.seq_len
+    if args.model is not None:
+        args.model.max_seqlen = args.data.seq_len
+    if args.entropy_model is not None:
+        args.entropy_model.max_seqlen = args.data.seq_len
 
     if args.distributed.tp_size == 1:
         logger.warning(
@@ -210,10 +259,15 @@ def train(args: TrainArgs):
             args,
             tokenizer.n_words,
         )
+        dump_fs = get_fs(args.dump_dir, s3_profile=args.checkpoint.s3_profile)
         if get_is_master():
-            os.makedirs(args.dump_dir, exist_ok=True)
-            args.dump_to_yaml_file(Path(args.dump_dir) / "config.yaml")
-        init_logger(Path(args.dump_dir) / "train.log")
+            dump_fs.mkdirs(args.dump_dir, exist_ok=True)
+            config_yaml_str = args.dump_to_yaml_str()
+            logging.info("TrainArgs: \n%s", config_yaml_str)
+            dump_fs.write_text(
+                os.path.join(args.dump_dir, "config.yaml"), config_yaml_str
+            )
+        init_logger(os.path.join(args.dump_dir, "train.log"), fs=dump_fs)
         init_signal_handler(set_preemption_flag)  # For handling preemption signals.
         setup_env(args.env)
         setup_torch_distributed(args.distributed)
@@ -237,7 +291,14 @@ def train(args: TrainArgs):
 
         # Initializing Model in meta device allows us to initialize models much bigger than 1 gpu's memory
         with torch.device("meta"):
-            model = ByteLatentTransformer(args.model)
+            if args.train_entropy_model:
+                assert args.entropy_model is not None
+                model = LMTransformer(args.entropy_model)
+                model_args = args.entropy_model
+            else:
+                assert args.model is not None
+                model = ByteLatentTransformer(args.model)
+                model_args = args.model
         logger.info("Model is built !")
 
         model_param_count = get_num_params(model)
@@ -247,7 +308,7 @@ def train(args: TrainArgs):
             world_mesh,
             args.model,
             args.distributed,
-            fsdp_grouping_plan=build_fsdp_grouping_plan(args.model),
+            fsdp_grouping_plan=build_fsdp_grouping_plan(model_args),
             tp_parallelize=tp_parallelize,
             no_recompute_ops=get_no_recompute_ops(),
         )
@@ -261,18 +322,22 @@ def train(args: TrainArgs):
 
         if args.checkpoint.init_ckpt_path:
             logger.info(f"Loading initial model from {args.checkpoint.init_ckpt_path}")
+            ckpt_fs = get_fs(
+                args.checkpoint.init_ckpt_path, s3_profile=args.checkpoint.s3_profile
+            )
             load_from_checkpoint(
-                args.checkpoint.init_ckpt_path, model, model_key="model"
+                ckpt_fs, args.checkpoint.init_ckpt_path, model, model_key="model"
             )  # Put model_key="" if its directly the model checkpoint
             model.rope_embeddings.reset_parameters()  # For RoPe initialization since it's a buffer it might not be loaded
         else:
             with torch.random.fork_rng(devices=[torch.cuda.current_device()]):
-                torch.manual_seed(args.model.seed)
+                torch.manual_seed(model_args.seed)
                 model.init_weights()
         check_model_value_range(model, range=10.0, std=1.0)
 
         # log model size
 
+        logger.info(model)
         logger.info(f"Model size: {model_param_count:,} total parameters")
 
         gpu_memory_monitor = GPUMemoryMonitor("cuda")
@@ -299,13 +364,14 @@ def train(args: TrainArgs):
         checkpoint.load(model, optimizer, train_state, world_mesh)
         # Either load from latest checkpoint or start from scratch
         if args.probe_freq is not None:
+            # TODO: Convert this to fsspec compatible
             if get_is_master():
-                os.makedirs(Path(args.dump_dir) / "probe", exist_ok=True)
+                os.makedirs(os.path.join(args.dump_dir, "probe"), exist_ok=True)
             torch.distributed.barrier()
             probe = AutoProbeD(
                 model,
                 (
-                    Path(args.dump_dir) / "probe" / f"probe.{dp_rank}.jsonl"
+                    os.path.join(args.dump_dir, "probe", f"probe.{dp_rank}.jsonl")
                     if (dp_rank % 128 == 0)
                     else None
                 ),
@@ -317,7 +383,7 @@ def train(args: TrainArgs):
         # train loop
         model.train()
         metric_logger = context_stack.enter_context(
-            MetricLogger(Path(args.dump_dir) / "metrics.jsonl", args)
+            MetricLogger(os.path.join(args.dump_dir, "metrics.jsonl"), args, fs=dump_fs)
         )
         data_loader = train_state.data_loader_state.build()
         batch_iterator = data_loader.create_iter()
@@ -329,7 +395,13 @@ def train(args: TrainArgs):
         nwords_since_last_log = 0
         time_last_log = timer()
         gc.collect()
-        while train_state.step < args.steps:
+        saved = False
+        step_losses: list[float] = []
+        step_tok_losses: list[float] = []
+        n_bytes: int = 0
+        while train_state.step < args.steps and (
+            args.max_steps is None or train_state.step < args.max_steps
+        ):
             # We constrain train_state.acc_step to be in range 0 to args.grad_acc_steps - 1
             train_state.acc_step += 1
             train_state.acc_step = train_state.acc_step % args.grad_acc_steps
@@ -342,10 +414,32 @@ def train(args: TrainArgs):
                 batch.x,
             ).cuda()
             batch_y = torch.from_numpy(batch.y).cuda()
-            batch_patch_lengths = torch.from_numpy(batch.patch_lengths).cuda()
+            if batch.patch_lengths is None:
+                batch_patch_lengths = None
+            else:
+                batch_patch_lengths = torch.from_numpy(batch.patch_lengths).cuda()
             mask = None if batch.mask is None else torch.from_numpy(batch.mask).cuda()
 
-            if args.model.encoder_enable_byte_ngrams and batch.ngram_ids is None:
+            if args.data.tokenizer_args.name in ["bytes", "blt"]:
+                n_bytes += batch_y.numel() if mask is None else mask.sum()
+            elif args.data.tokenizer_args.name in ["sp", "tiktoken"]:
+                for example in batch.y:
+                    target_tokens = tokenizer.decode(example.tolist(), cut_at_eos=False)
+                    n_bytes += (
+                        len(bytes(target_tokens, encoding="utf-8", errors="ignore"))
+                        + sum(example == tokenizer.eos_id)
+                        + sum(example == tokenizer.bos_id)
+                    )
+            else:
+                raise ValueError(
+                    f"Unexpected tokenizer to count n_bytes for: {args.data.tokenizer_args.name}"
+                )
+
+            if (
+                not args.train_entropy_model
+                and args.model.encoder_enable_byte_ngrams
+                and batch.ngram_ids is None
+            ):
                 raise ValueError(
                     "Cannot enable byte ngrams and have batch.ngram_ids be None"
                 )
@@ -408,11 +502,14 @@ def train(args: TrainArgs):
                     next(probe_mod.parameters()).grad is None
                 ), "Probe model shouldn't have grads at this point"
 
-            pred = model(
-                batch_x, patch_lengths=batch_patch_lengths, ngram_ids=ngram_ids
-            )
+            if args.train_entropy_model:
+                pred = model(batch_x)
+            else:
+                pred = model(
+                    batch_x, patch_lengths=batch_patch_lengths, ngram_ids=ngram_ids
+                )
 
-            loss, _ = compute_loss(pred, batch_y, mask, train_state.scale)
+            loss, tok_loss = compute_loss(pred, batch_y, mask, train_state.scale)
 
             # We scale loss with grad_acc_steps so the gradient is the same
             # regardless of grad_acc_steps
@@ -423,9 +520,24 @@ def train(args: TrainArgs):
             # For logging we undo that scaling
             loss = loss.detach() * args.grad_acc_steps
 
-            grad_norm = torch.nn.utils.clip_grad_norm_(
-                model.parameters(), max_norm=args.optim.clip, foreach=True
-            )
+            # Undo loss scaling so downstream down't need to worry about it
+            step_losses.append((loss / train_state.scale).item())
+            step_tok_losses.append(tok_loss / train_state.scale)
+
+            world_size = get_world_size()
+            if 1 < world_size <= 8:
+                # For some reason, there are errors in reduces due to
+                # not working for non-bf16 numbers. This function is a patched
+                # version that converts gradients to bf16 before computing norms.
+                # The error only happens in distributed training on one node,
+                # hence the guard
+                grad_norm = fixed_clip_grad_norm_(
+                    model.parameters(), max_norm=args.optim.clip, foreach=True
+                )
+            else:
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), max_norm=args.optim.clip, foreach=True
+                )
 
             grad_norm = (
                 grad_norm.full_tensor() if isinstance(grad_norm, DTensor) else grad_norm
@@ -474,59 +586,116 @@ def train(args: TrainArgs):
                 # Use xformer's analyze profile trace to get actual measurement
                 FLOPS = (
                     get_num_flop_per_token(
-                        model_param_count - args.model.vocab_size * args.model.dim,
-                        args.model.n_layers,
-                        args.model.dim,
+                        model_param_count - model_args.vocab_size * model_args.dim,
+                        model_args.n_layers,
+                        model_args.dim,
                         args.data.seq_len,
                     )
                     * wps
                 )
 
-                metrics = flatten_dict(
-                    {
-                        "global_step": train_state.step,
-                        "acc_step": train_state.acc_step,
-                        "speed": {
-                            "wps": wps,
-                            "FLOPS": FLOPS,
-                            "curr_iter_time": curr_iter_time,
-                            "data_load_time": data_load_time,
-                        },
-                        "optim": {
-                            "grad_norm": grad_norm,
-                            "lr": curr_lr,
-                            "total_tokens": total_tokens,
-                        },
-                        "memory": gpu_mem_stats._asdict(),
-                    },
-                    sep="/",
+                # Below, semantics are:
+                # per_gpu: Metrics on a given rank
+                # across_gpus: Metrics averaged/summed across all ranks
+                # step: Metric at a step
+                # interval: Metric averaged/summed across all steps since the last log interval.
+                #     Typically, this is 10
+                step_loss_per_gpu = loss.item()
+                step_loss_across_gpus = dist_mean(step_loss_per_gpu).item()
+                interval_loss_per_gpu = np.mean(step_losses).item()
+                interval_loss_across_gpus = dist_mean(interval_loss_per_gpu).item()
+
+                stacked_tok_loss = torch.cat(step_tok_losses, dim=0)
+                interval_total_tok_loss_per_gpu = stacked_tok_loss.sum().item()
+                interval_total_tok_loss_across_gpus = dist_sum(
+                    interval_total_tok_loss_per_gpu, reduce_dtype=torch.bfloat16
+                ).item()
+                interval_total_n_bytes_per_gpu = n_bytes
+                interval_total_n_bytes_across_gpus = dist_sum(
+                    n_bytes, reduce_dtype=torch.bfloat16
+                ).item()
+
+                interval_bpb_per_gpu = (
+                    interval_total_tok_loss_per_gpu
+                    / math.log(2)
+                    / interval_total_n_bytes_per_gpu
+                )
+                interval_bpb_across_gpus = (
+                    interval_total_tok_loss_across_gpus
+                    / math.log(2)
+                    / interval_total_n_bytes_across_gpus
                 )
 
-                to_sync = {}
-                to_sync["loss/out"] = loss.item()
-                metrics.update(dist_mean_dict(to_sync))
+                metric_dict = {
+                    "global_step": train_state.step,
+                    "acc_step": train_state.acc_step,
+                    "speed": {
+                        "wps": wps,
+                        "FLOPS": FLOPS,
+                        "curr_iter_time": curr_iter_time,
+                        "data_load_time": data_load_time,
+                    },
+                    "optim": {
+                        "grad_norm": grad_norm,
+                        "lr": curr_lr,
+                        "total_tokens": total_tokens,
+                    },
+                    "memory": gpu_mem_stats._asdict(),
+                    "loss": {
+                        "step_per_gpu": step_loss_per_gpu,
+                        "step_across_gpu": step_loss_across_gpus,
+                        "interval_per_gpu": interval_loss_per_gpu,
+                        "interval_across_gpu": interval_loss_across_gpus,
+                    },
+                    "bpb": {
+                        "interval_per_gpu": interval_bpb_per_gpu,
+                        "interval_across_gpus": interval_bpb_across_gpus,
+                    },
+                    "n_bytes": {
+                        "interval_per_gpu": interval_total_n_bytes_per_gpu,
+                        "interval_across_gpus": interval_total_n_bytes_across_gpus,
+                    },
+                }
+
+                metrics = flatten_dict(
+                    metric_dict,
+                    sep="/",
+                )
 
                 if get_is_master():
                     metric_logger.log(metrics)
 
-                gpu_memory_monitor.reset_peak_stats()
-                nwords_since_last_log = 0
-                time_last_log = timer()
+                # Below semantics are:
+                # step=Metrics at a step
+                # interval=Metrics averaged across the logging interval
+                # local=On one rank
+                # global=Across all ranks
                 logger.info(
                     f"step: {train_state.step}"
                     f"  acc: {train_state.acc_step}"
-                    f"  loss: {round(loss.item(),4):>7}"
+                    f"  loss_gpu: {round(interval_loss_per_gpu, 4):>7}"
+                    f"  loss_avg: {round(interval_loss_across_gpus, 4):>7}"
+                    f"  bpb_gpu: {interval_bpb_per_gpu:3f}"
+                    f"  bpb_avg: {interval_bpb_across_gpus:3f}"
                     f"  grad: {grad_norm:.2e}"
                     f"  flops: {FLOPS:.2e}"
                     f"  wps: {wps:.2e}"
                     f"  iter: {curr_iter_time:>7}"
                     f"  data: {data_load_time:>5}"
                     f"  lr: {curr_lr:.2e}"
+                    f"  n_bytes_gpu: {int(interval_total_n_bytes_per_gpu)}"
+                    f"  n_bytes_sum: {int(interval_total_n_bytes_across_gpus)}"
                     f"  mem: {gpu_mem_stats.max_active_pct:.0f}%"
                     f"  pow: {gpu_mem_stats.power_draw/1000} W"
                 )
 
-            saved = False
+                n_bytes = 0
+                step_losses = []
+                step_tok_losses = []
+                gpu_memory_monitor.reset_peak_stats()
+                nwords_since_last_log = 0
+                time_last_log = timer()
+
             if every_n_steps(
                 train_state, args.checkpoint.dump.every, acc_step=0
             ) or every_n_steps(train_state, args.checkpoint.eval.every, acc_step=0):
@@ -541,18 +710,14 @@ def train(args: TrainArgs):
             if args.eval is not None and every_n_steps(
                 train_state, args.checkpoint.eval.every, acc_step=0
             ):
-                from apps.main.eval import EVAL_FOLDER_NAME, EvalArgs, launch_eval
-
-                eval_args = dataclass_from_dict(EvalArgs, args.eval)
+                eval_args = args.eval
 
                 eval_args.global_step = train_state.step
                 eval_args.ckpt_dir = str(checkpoint.existing_saves[-1])
-                eval_args.dump_dir = str(
-                    os.path.join(
-                        args.dump_dir,
-                        "evals",
-                        EVAL_FOLDER_NAME.format(train_state.step),
-                    )
+                eval_args.dump_dir = os.path.join(
+                    args.dump_dir,
+                    "evals",
+                    EVAL_FOLDER_NAME.format(train_state.step),
                 )
                 eval_args.metric_log_dir = args.dump_dir
                 if args.async_eval_gpus is None:
@@ -593,6 +758,9 @@ def train(args: TrainArgs):
             args,
             device_mesh=world_mesh,
         )
+    if isinstance(data_loader, MultiprocessIterator):
+        logger.info("Closing MP iterator before exiting")
+        data_loader.shutdown()
     gc.collect()
 
 
@@ -635,15 +803,7 @@ def main():
 
     Plus all the default values in TrainArgs dataclass.
     """
-    cli_args = OmegaConf.from_cli()
-    file_cfg = OmegaConf.load(cli_args.config)
-    # We remove 'config' attribute from config as the underlying DataClass does not have it
-    del cli_args.config
-
-    default_cfg = OmegaConf.create(TrainArgs().model_dump())
-    cfg = OmegaConf.merge(default_cfg, file_cfg, cli_args)
-    cfg = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
-    train_args = TrainArgs.model_validate(cfg)
+    train_args = parse_args(TrainArgs)
     if train_args.debug_dynamo:
         import torch._dynamo
 

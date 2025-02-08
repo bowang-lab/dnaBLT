@@ -68,10 +68,9 @@ def create_args(cross_attention=False):
         # Additional args from command line
         dim_token=256,
         patch_size=6,
-        tokenization_mode="bytes",
         patching_mode="space",
         tie_local_encoder_decoder_logits=False,
-        data_loader_patching=True,
+        patch_in_forward=False,
         max_encoder_seq_length=12288,
         pad_to_max_length=True,
         encoder_lm_loss=False,

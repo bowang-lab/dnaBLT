@@ -414,9 +414,10 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     # TODO: What is the purpose of this parameter?
     weight_tying: bool = False
     architecture: str = "vanilla" # For Mamba use "mamba"
+    patch_in_forward: bool = False
 
     # Architecture and dimensions
-    dim_token: int = 256
+    dim_token: int | None = None
     dim_global: int = 512
     dim_local_decoder: int = 512
     dim_local_encoder: int = 512
@@ -425,7 +426,6 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     n_layers_local_encoder: int = 8
 
     # Tokenization and patching
-    tokenization_mode: str = "bpe"
     patch_size: float | None = None
     patching_mode: str | None = None
     patching_threshold: float | None = None
@@ -433,7 +433,6 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     monotonicity: bool = False
     patching_batch_size: int = 1
     patching_device: str = "cuda"
-    data_loader_patching: bool = False
     max_patch_length: int | None = None
 
     # Encoder/Decoder configuration
@@ -525,10 +524,6 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     fuse_sequence_parallel: bool = False
     use_fsdp: bool = True
     attn_to_keep: str = "all"
-
-    # RoPE parameters
-    rope_theta: float = 10000.0
-    rope_use_fp32_in_outer_product: bool = False
 
     # Parameter mixing
     pm_size: int = 0
@@ -650,6 +645,7 @@ def create_local_encoder(args: ByteLatentTransformerArgs) -> LocalEncoder:
         sliding_window=args.local_attention_window_len,
         use_rope=args.use_rope,
         rope_theta=args.rope_theta,
+        rope_use_fp32_in_outer_product=args.rope_use_fp32_in_outer_product,
         init_base_std=args.init_base_std,
         init_std_factor=args.init_std_factor,
         n_kv_heads=args.n_kv_heads,
@@ -692,6 +688,7 @@ def create_local_decoder(args: ByteLatentTransformerArgs) -> LocalDecoder:
         sliding_window=args.local_attention_window_len,
         use_rope=args.use_rope,
         rope_theta=args.rope_theta,
+        rope_use_fp32_in_outer_product=args.rope_use_fp32_in_outer_product,
         init_base_std=args.init_base_std,
         init_std_factor=args.init_std_factor,
         n_kv_heads=args.n_kv_heads,
@@ -864,12 +861,6 @@ class ByteLatentTransformer(nn.Module):
             local_encoder_dim=self.local_encoder.dim,
             encoder_hash_byte_group_size=None,
         )
-        self.tok_embeddings = torch.nn.Embedding(args.vocab_size, args.dim)
-
-        # Transformer layers
-        self.layers = nn.ModuleList(
-            [TransformerBlock(args) for _ in range(args.n_layers)]
-        )
 
         # Encoder ngram embedding tables
         self.encoder_ngram_embedding = None
@@ -887,12 +878,9 @@ class ByteLatentTransformer(nn.Module):
 
         # Output layer
         assert args.vocab_size > 0, "vocab_size must be greater than 0"
-        self.output = nn.Linear(args.dim, args.vocab_size, bias=False)
-        if args.weight_tying:
-            self.output.weight = self.tok_embeddings.weight
 
         # Patcher module
-        if not args.data_loader_patching:
+        if args.patch_in_forward:
             self.patcher = Patcher(
                 PatcherArgs(
                     patch_size=args.patch_size,
@@ -993,11 +981,10 @@ class ByteLatentTransformer(nn.Module):
                 local_encoder_embeds = local_encoder_embeds + ngram_embeds
 
         # Local encoder
-        h_cross = None
         (h_encoder, h_cross), cache_encoder = self.local_encoder(
             tokens=local_encoder_tokens,
             embeds=local_encoder_embeds,
-            patch_embeds=h_cross if self.cross_attn_encoder else None,
+            patch_embeds=None,
             cross_mask=cross_attn_mask_enc,
             num_patches=patch_lengths.shape[1],
             patch_ids=patch_ids,
@@ -1072,47 +1059,17 @@ class ByteLatentTransformer(nn.Module):
         )
         return output
 
-    def reset_parameters(self, init_std=None):
-        # Either use fixed base std or sqrt model dim
-        init_std = init_std or (self.dim ** (-0.5))
-        nn.init.trunc_normal_(
-            self.tok_embeddings.weight,
-            mean=0.0,
-            std=init_std,
-            a=-3 * init_std,
-            b=3 * init_std,
-        )
-        if not self.weight_tying:
-            nn.init.trunc_normal_(
-                self.output.weight,
-                mean=0.0,
-                std=init_std,
-                a=-3 * init_std,
-                b=3 * init_std,
-            )
-
     def init_weights(self):
-        self.reset_parameters()
-        self.init_base_std = self.init_base_std or (self.dim ** (-0.5))
-        for depth, layer in enumerate(self.layers):
-            factor = {
-                InitStdFactor.CURRENT_DEPTH: (2 * (depth + 1)) ** 0.5,
-                InitStdFactor.GLOBAL_DEPTH: (2 * (len(self.layers) + 1)) ** 0.5,
-                InitStdFactor.DIM_RATIO: self.dim / 4096,
-                InitStdFactor.DISABLED: 1.0,
-            }[self.init_std_factor]
+        self.local_encoder.init_weights()
+        self.global_transformer.init_weights()
+        self.local_decoder.init_weights()
 
-            layer.init_weights(self.init_base_std, factor)
-
-        self.local_decoder.init_weights(self.init_base_std)
-        self.global_transformer.init_weights(self.init_base_std)
-        self.local_encoder.init_weights(self.init_base_std)
-
+        emb_std = self.local_encoder.dim ** (-0.5)
         for emb in self.encoder_hash_tok_embedding:
             nn.init.trunc_normal_(
                 emb.weight,
                 mean=0.0,
-                std=self.init_base_std,
-                a=-3 * self.init_base_std,
-                b=3 * self.init_base_std,
+                std=emb_std,
+                a=-3 * emb_std,
+                b=3 * emb_std,
             )

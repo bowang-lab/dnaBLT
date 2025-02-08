@@ -1,20 +1,16 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
+import os
 import time
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import List, Optional
 
 import torch
-from lingua.args import dataclass_from_dict
-from lingua.tokenizers.abstract_tokenizer import Tokenizer
-from lingua.tokenizers.build_tokenizer import build_tokenizer
 from omegaconf import OmegaConf
 from torch import nn
 from torch.nn import functional as F
 from torch.nn.attention.flex_attention import create_block_mask
 from tqdm import tqdm
 
+from bytelatent.args import PackedCausalTransformerGeneratorArgs, TrainArgs
 from bytelatent.base_transformer import (
     Attention,
     causal_mask,
@@ -23,7 +19,10 @@ from bytelatent.base_transformer import (
     lengths_to_start_ids,
 )
 from bytelatent.checkpoint import CONSOLIDATE_NAME
-from bytelatent.transformer import LMTransformer, LMTransformerArgs
+from bytelatent.data.file_util import get_fs
+from bytelatent.model.blt import ByteLatentTransformer
+from bytelatent.tokenizers.abstract_tokenizer import Tokenizer
+from bytelatent.transformer import LMTransformer
 
 
 def sample_top_p(probs: torch.Tensor, p: float) -> torch.Tensor:
@@ -62,7 +61,7 @@ def sample_tokens(logits, temperature=0.0, top_p=None, top_k=None):
     return next_token.view(shape[:-1])
 
 
-def pack_prompts(prompts: List[int]):
+def pack_prompts(prompts: list[int]):
     res = []
     lengths = []
     for i, p in enumerate(prompts):
@@ -118,22 +117,6 @@ class KVCache(nn.Module):
         self.k_cache.index_copy_(1, self.offset + tok_idx, k_val)
         self.v_cache.index_copy_(1, self.offset + tok_idx, v_val)
         return self.k_cache, self.v_cache
-
-
-@dataclass
-class PackedCausalTransformerGeneratorArgs:
-    temperature: float = 0.0
-    top_p: Optional[float] = None
-    top_k: Optional[float] = None
-    max_gen_len: int = 512  # Maximum number of tokens to generate
-    max_tokens: int = 1024  # Maximum number of tokens that can go through the model
-    max_prompt_len: Optional[int] = None
-    until: List[str] = field(default_factory=list)
-    compile_prefilling: bool = False
-    reduce_generation_overhead: bool = False
-    show_progress: bool = False
-    dtype: Optional[str] = "bf16"
-    device: Optional[str] = "cuda"
 
 
 class PackedCausalTransformerGenerator:
@@ -401,25 +384,29 @@ class PackedCausalTransformerGenerator:
 
 def load_consolidated_model_and_tokenizer(
     consolidated_path,
-    model_cls=LMTransformer,
-    model_args_cls=LMTransformerArgs,
 ):
-    ckpt_path = Path(consolidated_path)
-    config = ckpt_path / "params.json"
-    config = OmegaConf.load(config)
+    train_args_path = os.path.join(consolidated_path, "params.json")
+    fs = get_fs(train_args_path)
+    with fs.open(train_args_path) as f:
+        train_args = TrainArgs.model_validate_json(f.read())
+
+    if train_args.train_entropy_model:
+        model_args = train_args.entropy_model
+        model = LMTransformer(model_args)
+    else:
+        model_args = train_args.model
+        model = ByteLatentTransformer(model_args)
 
     param_dtype = dict(fp32=torch.float32, fp16=torch.float16, bf16=torch.bfloat16)[
-        config.distributed.model_dtype
+        train_args.distributed.model_dtype
     ]
-    model_args = dataclass_from_dict(model_args_cls, config.model, strict=False)
-    tokenizer = build_tokenizer(config.data.tokenizer.name, config.data.tokenizer.path)
-    model = model_cls(model_args)
-    st_dict = torch.load(ckpt_path / CONSOLIDATE_NAME, weights_only=True)
+    tokenizer = train_args.data.tokenizer_args.build()
+    st_dict = torch.load(consolidated_path / CONSOLIDATE_NAME, weights_only=True)
     model.load_state_dict(st_dict["model"])
     model = model.cuda().eval()
     for param in model.parameters():
         param.data = param.data.to(dtype=param_dtype)
-    return model, tokenizer, config
+    return model, tokenizer, train_args
 
 
 def main():
