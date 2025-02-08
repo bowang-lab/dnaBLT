@@ -59,6 +59,7 @@ class LMTransformer(BaseTransformer):
         self.weight_tying = args.weight_tying
         self.sliding_window = args.sliding_window
         self.return_dict = args.return_dict
+        self.n_heads = args.n_heads
         assert args.vocab_size > 0
 
         self.tok_embeddings = torch.nn.Embedding(args.vocab_size, args.dim)
@@ -98,7 +99,7 @@ class LMTransformer(BaseTransformer):
                 sliding_window=self.sliding_window,
                 tokens=token_values,
                 eos_id=self.eos_id,
-                num_heads=args.n_heads,
+                num_heads=self.n_heads,
             )
         )
 
