@@ -172,9 +172,8 @@ def create_causal_mask(
 
         elif attn_bias_type == "sliding_causal":
             # Simple sliding window with causal constraint
-            return fmha.attn_bias.LowerTriangularFromBottomRightMask().make_local_attention(
-                window_size=sliding_window
-            )
+            base_mask = fmha.attn_bias.LowerTriangularFromBottomRightMask()
+            return base_mask.make_local_attention(sliding_window)
 
         else:
             return fmha.attn_bias.LocalAttentionFromBottomRightMask(
