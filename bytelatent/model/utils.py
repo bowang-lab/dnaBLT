@@ -164,9 +164,14 @@ def create_causal_mask(
             assert sliding_window is not None
             assert eos_id is not None
             assert tokens is not None
-            return fmha.attn_bias.BlockDiagonalCausalMask.from_seqlens(
-                q_seqlen=tokens_to_seqlen(tokens, eos_id)
+
+            q_seqlen = tokens_to_seqlen(tokens, eos_id)
+            print(f"q_seqlen:\n{q_seqlen}\n")
+            mask = fmha.attn_bias.BlockDiagonalCausalMask.from_seqlens(
+                q_seqlen=q_seqlen
             ).make_local_attention(sliding_window)
+            print(f"mask:\n{mask}\n")
+            return mask
         else:
             return fmha.attn_bias.LocalAttentionFromBottomRightMask(
                 window_left=sliding_window - 1, window_right=0
