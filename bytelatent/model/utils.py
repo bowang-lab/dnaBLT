@@ -127,14 +127,16 @@ def tokens_to_seqlen(batch: torch.Tensor, eos_id: int):
     as the effective sequence length. If no eos_id is found in a row, 
     the full row length is used.
     """
-    seqlens = []
-    for row in batch:
-        eos_positions = torch.where(row == eos_id)[0]
-        if eos_positions.numel() == 0:
-            seqlens.append(row.size(0))
-        else:
-            seqlens.append(eos_positions[0].item() + 1)
-    return seqlens
+    return [batch.size(1)] * batch.size(0)  # [seq_len] * batch_size
+
+    # seqlens = []
+    # for row in batch:
+    #     eos_positions = torch.where(row == eos_id)[0]
+    #     if eos_positions.numel() == 0:
+    #         seqlens.append(row.size(0))
+    #     else:
+    #         seqlens.append(eos_positions[0].item() + 1)
+    # return seqlens
 
 
 def create_causal_mask(
