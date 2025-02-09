@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH -c 32
-#SBATCH --gres=gpu:2
+#SBATCH -c 48
+#SBATCH --gres=gpu:4
 #SBATCH --job-name=entropy_model
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
-#SBATCH -t 3-00:0:0
+#SBATCH -t 4-00:0:0
 #SBATCH -p gpu_bwanggroup
-#SBATCH --mem=200G
+#SBATCH --mem=400G
 #SBATCH --reservation=h100
 
 # Source conda
@@ -68,7 +68,7 @@ stdbuf -oL -eL srun --exclusive python3 bytelatent/train_entropy_model.py \
     --max_epochs 1 \
     --grad_clip 1.0 \
     --grad_accum 2 \
-    --devices 2 \
+    --devices 4 \
     --strategy ddp \
     --run_name "entropy_model_$(date +%Y%m%d_%H%M%S)" \
     --seed 23 \

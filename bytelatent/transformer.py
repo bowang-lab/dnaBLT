@@ -103,12 +103,6 @@ class LMTransformer(BaseTransformer):
             )
         )
 
-        print(f"\ntoken_values:\n{token_values}\n")
-        print(f"\ntarget:\n{target}\n")
-        print(f"\ntok_idx:\n{tok_idx}\n")
-        print(f"\nmask:\n{mask}\n")
-        print(f"\nself.eos_id:\n{self.eos_id}\n")
-
         h = super().forward(h, tok_idx=tok_idx, mask=mask, attn_impl=attn_impl)
 
         logits = self.output(self.norm(h))
