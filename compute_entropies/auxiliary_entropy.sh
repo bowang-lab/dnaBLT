@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH -c 100
-#SBATCH --gres=gpu:4
+#SBATCH -c 50
+#SBATCH --gres=gpu:2
 #SBATCH --job-name=entropy_model
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
 #SBATCH -t 1-00:0:0
 #SBATCH -p gpu_bwanggroup
-#SBATCH --mem=400G
+#SBATCH --mem=200G
 #SBATCH --reservation=h100
 
 # Source conda
