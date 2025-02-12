@@ -93,7 +93,7 @@ def calculate_entropies(tokens: torch.tensor, model: torch.nn.Module, device):
     return concat_entropies
 
 
-def load_entropy_model(checkpoint_dir, device="auto"):
+def load_entropy_model(checkpoint_dir, map_location):
     entropy_model = LMTransformer(
         LMTransformerArgs(
             dim=768,
@@ -108,11 +108,9 @@ def load_entropy_model(checkpoint_dir, device="auto"):
         )
     )
 
-    state_dict = torch.load(checkpoint_dir, map_location=device)["state_dict"]
+    state_dict = torch.load(checkpoint_dir, map_location=map_location)["state_dict"]
     state_dict = {k.replace("model.", ""): v for k, v in state_dict.items()}
-    entropy_model.load_state_dict(state_dict, strict=False)
-    entropy_model.to(device)
-    entropy_model = entropy_model.eval()
+    entropy_model.load_state_dict(state_dict, strict=True)
 
     # no grads for the model:
     for param in entropy_model.parameters():
@@ -202,7 +200,11 @@ def init_distributed_training(
     # model.to(rank)
     # model.eval()
 
-    model = load_entropy_model(entropy_model_checkpoint_dir)
+    map_location = {"cuda:%d" % 0: "cuda:%d" % rank}
+    model = load_entropy_model(entropy_model_checkpoint_dir, map_location=map_location)
+    model.to_bfloat16_except_poles_residues()
+    model.to(rank)
+    model.eval()
 
     # Move to device and wrap with DDP
     entropy_model = DDP(model, device_ids=[rank])
