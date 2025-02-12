@@ -207,7 +207,7 @@ def init_distributed_training(
     model.eval()
 
     # Move to device and wrap with DDP
-    entropy_model = DDP(model, device_ids=[rank])
+    entropy_model = model  #DDP(model, device_ids=[rank])
 
     # ---------------------------------------------------------------------
     # 4. Prepare Arrow writing
