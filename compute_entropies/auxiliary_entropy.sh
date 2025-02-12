@@ -54,7 +54,7 @@ stdbuf -oL -eL srun --exclusive python3 compute_entropies/auxiliary_entropy.py \
     --master_port $MASTER_PORT \
     --backend nccl \
     --world_size 4 \
-    --gpu_per_node 4 \
+    --gpu_per_node 2 \
     --data_path $data_path \
     --data_cache_dir $data_path/cache \
     --split test \

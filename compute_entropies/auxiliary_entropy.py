@@ -323,6 +323,8 @@ def main_worker(local_rank, args):
     print("node rank:", node_rank)
     global_rank = node_rank * args.gpu_per_node + local_rank
     world_size = args.world_size
+    print("global rank:", global_rank)
+    print("world size:", world_size)
     init_distributed_training(
         global_rank,
         world_size,
