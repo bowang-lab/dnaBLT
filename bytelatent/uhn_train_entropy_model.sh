@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -c 48
+#SBATCH -c 64
 #SBATCH --gres=gpu:4
 #SBATCH --job-name=entropy_model
 #SBATCH --output=%x-%j.out

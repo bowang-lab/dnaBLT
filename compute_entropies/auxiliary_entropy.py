@@ -9,22 +9,41 @@ import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.nn.utils.rnn import pad_sequence
+
 # from evo import Evo
 from rich.progress import Progress, TextColumn
-import datasets
-from stripedhyena.utils import dotdict
-from stripedhyena.model import StripedHyena
+from datasets import config, load_dataset
+from bytelatent.transformer import LMTransformer, LMTransformerArgs
+
+
+# from stripedhyena.utils import dotdict
+# from stripedhyena.model import StripedHyena
 import yaml
 import time
+
 
 # -------------------------------------------------------------------------
 # Collate function (unchanged)
 # -------------------------------------------------------------------------
-def collate(sequences: list):    
+def collate(sequences: list):
     # Pad to max length in the batch
-    text = [s['text'] for s in sequences]
-    record = [s['record'] for s in sequences]
-    return pad_sequence([torch.from_numpy(np.frombuffer(bytearray(s.encode('utf-8')), dtype=np.uint8)) for s in text], batch_first=True, padding_value=0), record, text
+    text = [s["text"] for s in sequences]
+    record = [s["record"] for s in sequences]
+    return (
+        pad_sequence(
+            [
+                torch.from_numpy(
+                    np.frombuffer(bytearray(s.encode("utf-8")), dtype=np.uint8)
+                )
+                for s in text
+            ],
+            batch_first=True,
+            padding_value=0,
+        ),
+        record,
+        text,
+    )
+
 
 # -------------------------------------------------------------------------
 # Entropy Helpers (unchanged)
@@ -38,6 +57,7 @@ def entropy(scores):
     probs = torch.exp(log_probs)
     p_log_p = log_probs * probs
     return -p_log_p.sum(dim=-1)
+
 
 def calculate_entropies(tokens: torch.tensor, model: torch.nn.Module, device):
     """
@@ -71,19 +91,61 @@ def calculate_entropies(tokens: torch.tensor, model: torch.nn.Module, device):
         concat_entropies = torch.cat(entropies, dim=0)
         concat_entropies = concat_entropies.reshape(tokens.shape)
     return concat_entropies
+
+
+def load_entropy_model(checkpoint_dir, device="auto"):
+    entropy_model = LMTransformer(
+        LMTransformerArgs(
+            dim=768,
+            n_layers=14, 
+            n_heads=12,
+            max_seqlen=8192,
+            ffn_dim_multiplier=1,
+            vocab_size=260,
+            attn_bias_type="local_block_causal",
+            attn_impl="xformers",
+            sliding_window=512,
+        )
+    )
+
+    state_dict = torch.load(checkpoint_dir, map_location=device)["state_dict"]
+    state_dict = {k.replace("model.", ""): v for k, v in state_dict.items()}
+    entropy_model.load_state_dict(state_dict, strict=False)
+    entropy_model.to(device)
+    entropy_model = entropy_model.eval()
+
+    # no grads for the model:
+    for param in entropy_model.parameters():
+        param.requires_grad = False
+
+    return entropy_model
+
+
 # test_files = {
 #     'test': [
-#         'hf://datasets/LongSafari/open-genome@84369c058d192dcb607086d71679b877421e3250/stage1/gtdb/gtdb_test.parquet', 
+#         'hf://datasets/LongSafari/open-genome@84369c058d192dcb607086d71679b877421e3250/stage1/gtdb/gtdb_test.parquet',
 #         'hf://datasets/LongSafari/open-genome@84369c058d192dcb607086d71679b877421e3250/stage1/imgpr/imgpr_test.parquet'
 #     ]
 # }
 # data = datasets.load_dataset("parquet", data_files=test_files, split="test")
 
 
-def init_distributed_training(rank, world_size, master_addr, master_port, backend, gpu_per_node, data_path, split, batch_size, arrow_batch=10):
+def init_distributed_training(
+    rank,
+    world_size,
+    master_addr,
+    master_port,
+    backend,
+    gpu_per_node,
+    data_path,
+    split,
+    batch_size,
+    arrow_batch=10,
+    entropy_model_checkpoint_dir="",
+):
     # Set environment variables for master address and port
-    os.environ['MASTER_ADDR'] = master_addr
-    os.environ['MASTER_PORT'] = str(master_port)
+    os.environ["MASTER_ADDR"] = master_addr
+    os.environ["MASTER_PORT"] = str(master_port)
 
     # Set GPU device
     torch.cuda.set_device(rank % gpu_per_node)
@@ -97,30 +159,29 @@ def init_distributed_training(rank, world_size, master_addr, master_port, backen
     # Message indicating the process has passed the barrier
     print(f"Process {rank} passed barrier")
     # data = datasets.load_dataset(f"{data_path}/stage1", split=split).with_format('torch')
-    test_files = {
-        'test': [
-            '/cluster/home/t136085uhn/.cache/huggingface/hub/datasets--LongSafari--open-genome/snapshots/84369c058d192dcb607086d71679b877421e3250/stage1/gtdb/gtdb_test.parquet',
-            '/cluster/home/t136085uhn/.cache/huggingface/hub/datasets--LongSafari--open-genome/snapshots/84369c058d192dcb607086d71679b877421e3250/stage1/imgpr/imgpr_test.parquet'
-            ]
-    }
-    data = datasets.load_dataset("parquet", data_files=test_files, split="test").with_format("torch")
-
+    # test_files = {
+    #     "test": [
+    #         "/cluster/home/t136085uhn/.cache/huggingface/hub/datasets--LongSafari--open-genome/snapshots/84369c058d192dcb607086d71679b877421e3250/stage1/gtdb/gtdb_test.parquet",
+    #         "/cluster/home/t136085uhn/.cache/huggingface/hub/datasets--LongSafari--open-genome/snapshots/84369c058d192dcb607086d71679b877421e3250/stage1/imgpr/imgpr_test.parquet",
+    #     ]
+    # }
+    # data = datasets.load_dataset(
+    #     "parquet", data_files=test_files, split="test"
+    # ).with_format("torch")
+    data = load_dataset(f"{data_path}/stage1", split=split).with_format("torch")
 
     # Standard PyTorch DistributedSampler (removes your custom length-sorting).
     # If you need length-based sorting globally, you need a custom distributed sampler.
     dist_sampler = DistributedSampler(
-        data,
-        num_replicas=world_size,
-        rank=rank,
-        shuffle=True  # or False, up to you
+        data, num_replicas=world_size, rank=rank, shuffle=True  # or False, up to you
     )
 
     dataloader = DataLoader(
         data,
-        sampler=dist_sampler,       # ensures each rank sees a unique subset
+        sampler=dist_sampler,  # ensures each rank sees a unique subset
         batch_size=batch_size,
         collate_fn=collate,
-        drop_last=False
+        drop_last=False,
     )
 
     # ---------------------------------------------------------------------
@@ -129,22 +190,20 @@ def init_distributed_training(rank, world_size, master_addr, master_port, backen
 
     # evo_model = Evo('evo-1-8k-base')
     # entropy_model = evo_model.model
-    with open('evo-1-8k-base_inference.yml', 'r') as f:
-        gconfig = yaml.load(f, Loader=yaml.SafeLoader)
+    # with open("evo-1-8k-base_inference.yml", "r") as f:
+    #     gconfig = yaml.load(f, Loader=yaml.SafeLoader)
 
-    global_config = dotdict(gconfig)
-    map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
-    state_dict_evo = torch.load("evo7b_state_dict.pt", map_location=map_location)
-    model = StripedHyena(global_config)
-    model.load_state_dict(state_dict_evo, strict=True)
-    model.to_bfloat16_except_poles_residues()
-    model.to(rank)
-    model.eval()
-    # entropy_model = load_entropy_model(
-    #     entropy_model_checkpoint_dir,
-    #     entropy_model_state_dict_path,
-    #     device=device
-    # )
+    # global_config = dotdict(gconfig)
+    # map_location = {"cuda:%d" % 0: "cuda:%d" % rank}
+    # state_dict_evo = torch.load("evo7b_state_dict.pt", map_location=map_location)
+    # model = StripedHyena(global_config)
+    # model.load_state_dict(state_dict_evo, strict=True)
+    # model.to_bfloat16_except_poles_residues()
+    # model.to(rank)
+    # model.eval()
+
+    model = load_entropy_model(entropy_model_checkpoint_dir)
+
     # Move to device and wrap with DDP
     entropy_model = DDP(model, device_ids=[rank])
 
@@ -173,7 +232,7 @@ def init_distributed_training(rank, world_size, master_addr, master_port, backen
 
                 with Progress(
                     *Progress.get_default_columns(),
-                    TextColumn("Completed: {task.completed}")
+                    TextColumn("Completed: {task.completed}"),
                 ) as progress:
                     task = progress.add_task(
                         f"[green]Rank {rank} calculating entropies...", total=None
@@ -183,21 +242,31 @@ def init_distributed_training(rank, world_size, master_addr, master_port, backen
                     start_time = time.time()
                     tot_bsz_ = 0
                     for tokens, sample_ids, texts in dataloader:
-                        tokens = tokens.to(dtype=torch.int, device=rank)  # push tokens to GPU
-                        
+                        tokens = tokens.to(
+                            dtype=torch.int, device=rank
+                        )  # push tokens to GPU
+
                         # Calculate entropies
                         scores = calculate_entropies(tokens, entropy_model, device=rank)
-                        scores = scores.cpu().contiguous().view(torch.uint16).numpy().astype(np.float16)
+                        scores = (
+                            scores.cpu()
+                            .contiguous()
+                            .view(torch.uint16)
+                            .numpy()
+                            .astype(np.float16)
+                        )
 
                         bsz_ = len(scores)
                         tot_bsz_ += bsz_
 
-                        print(f"Processed {tot_bsz_} batches in {time.time() - start_time} seconds")
+                        print(
+                            f"Processed {tot_bsz_} batches in {time.time() - start_time} seconds"
+                        )
 
                         for i in range(bsz_):
-                            entropies_buffer.append(scores[i])    # shape [seq_len]
-                            id_buffer.append(sample_ids[i])       # a single sample_id
-                            text_buffer.append(texts[i]) 
+                            entropies_buffer.append(scores[i])  # shape [seq_len]
+                            id_buffer.append(sample_ids[i])  # a single sample_id
+                            text_buffer.append(texts[i])
 
                         # Write to arrow in chunks
                         if len(entropies_buffer) == arrow_batch_size:
@@ -244,30 +313,92 @@ def init_distributed_training(rank, world_size, master_addr, master_port, backen
         # -----------------------------------------------------------------
         dist.destroy_process_group()
 
+
 def main_worker(local_rank, args):
-    print(os.environ['SLURM_PROCID'])
-    if 'SLURM_PROCID' in os.environ:
-        node_rank = int(os.environ['SLURM_PROCID'])
+    print(os.environ["SLURM_PROCID"])
+    if "SLURM_PROCID" in os.environ:
+        node_rank = int(os.environ["SLURM_PROCID"])
     else:
         node_rank = 0
-    print('node rank:', node_rank)
+    print("node rank:", node_rank)
     global_rank = node_rank * args.gpu_per_node + local_rank
     world_size = args.world_size
-    init_distributed_training(global_rank, world_size, args.master_addr, args.master_port, args.backend, args.gpu_per_node, args.data_path, args.split, args.batch_size, args.arrow_batch)
+    init_distributed_training(
+        global_rank,
+        world_size,
+        args.master_addr,
+        args.master_port,
+        args.backend,
+        args.gpu_per_node,
+        args.data_path,
+        args.split,
+        args.batch_size,
+        args.arrow_batch,
+    )
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="PyTorch Distributed Training Test with mp.spawn")
-    parser.add_argument('--master_addr', type=str, required=True, help='Address of the master node')
-    parser.add_argument('--master_port', type=int, required=True, help='Port of the master node')
-    parser.add_argument('--backend', type=str, required=True, choices=['gloo', 'nccl'], help='Distributed backend')
-    parser.add_argument('--world_size', type=int, required=True, help='Number of nodes in total')
-    parser.add_argument('--gpu_per_node', type=int, required=True, help='Number of GPUs per node')
-    parser.add_argument('--data_path', type=str, required=True, help="The path to the Open Genome dataset")
-    parser.add_argument('--split', type=str, required=True, help="The train/test/val split")
-    parser.add_argument('--batch_size', type=int, required=True, help="The batch size to process entropies")
-    parser.add_argument('--arrow_batch', type=int, required=False, help="The batch size to write arrow files")
+    parser = argparse.ArgumentParser(
+        description="PyTorch Distributed Training Test with mp.spawn"
+    )
+    parser.add_argument(
+        "--master_addr", type=str, required=True, help="Address of the master node"
+    )
+    parser.add_argument(
+        "--master_port", type=int, required=True, help="Port of the master node"
+    )
+    parser.add_argument(
+        "--backend",
+        type=str,
+        required=True,
+        choices=["gloo", "nccl"],
+        help="Distributed backend",
+    )
+    parser.add_argument(
+        "--world_size", type=int, required=True, help="Number of nodes in total"
+    )
+    parser.add_argument(
+        "--gpu_per_node", type=int, required=True, help="Number of GPUs per node"
+    )
+    parser.add_argument(
+        "--data_path",
+        type=str,
+        required=True,
+        help="The path to the Open Genome dataset",
+    )
+    parser.add_argument(
+        "--split", type=str, required=True, help="The train/test/val split"
+    )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        required=True,
+        help="The batch size to process entropies",
+    )
+    parser.add_argument(
+        "--arrow_batch",
+        type=int,
+        required=False,
+        help="The batch size to write arrow files",
+    )
+    parser.add_argument(
+        "--data_cache_dir",
+        type=str,
+        required=True,
+        help="The directory to cache the Open Genome dataset",
+    )
+    parser.add_argument(
+        "--entropy_model_checkpoint_dir",
+        type=str,
+        required=True,
+        help="The directory to load the entropy model checkpoint",
+    )
 
     args = parser.parse_args()
 
     # Use mp.spawn to launch multiple processes, each corresponding to a GPU
+
+    os.environ["HF_DATASETS_CACHE"] = args.data_cache_dir
+    config.HF_DATASETS_CACHE = args.data_cache_dir
+
     mp.spawn(main_worker, nprocs=args.gpu_per_node, args=(args,))

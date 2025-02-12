@@ -4,11 +4,10 @@
 #SBATCH --job-name=entropy_model
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
-#SBATCH -t 3-00:0:0
+#SBATCH -t 1-00:0:0
 #SBATCH -p gpu_bwanggroup
 #SBATCH --mem=400G
 #SBATCH --reservation=h100
-#SBATCH -N 1
 
 # Source conda
 source ~/.bashrc
@@ -20,7 +19,8 @@ conda activate blt
 echo "Using $PYTHON_PATH"
 
 # Set directories (THIS IS ashah01'S T-ID MAKE SURE TO USE YOUR OWN)
-home_dir="/cluster/home/t136085uhn/dnaBLT"
+home_dir="/cluster/home/t136151uhn/dnaBLT"
+checkpoints_dir="/cluster/projects/bwanggroup/dnaBLT/checkpoints"
 data_path="/cluster/projects/bwanggroup/open-genome"
 cd $home_dir
 
@@ -56,6 +56,8 @@ stdbuf -oL -eL srun --exclusive python3 compute_entropies/auxiliary_entropy.py \
     --world_size 4 \
     --gpu_per_node 4 \
     --data_path $data_path \
+    --data_cache_dir $data_path/cache \
     --split test \
     --batch_size 4 \
-    --arrow_batch 10
+    --arrow_batch 10 \
+    --entropy_model_checkpoint_dir $checkpoints_dir/last.ckpt
