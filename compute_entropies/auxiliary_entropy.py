@@ -97,7 +97,7 @@ def load_entropy_model(checkpoint_dir, device="auto"):
     entropy_model = LMTransformer(
         LMTransformerArgs(
             dim=768,
-            n_layers=14, 
+            n_layers=14,
             n_heads=12,
             max_seqlen=8192,
             ffn_dim_multiplier=1,
@@ -326,16 +326,17 @@ def main_worker(local_rank, args):
     print("global rank:", global_rank)
     print("world size:", world_size)
     init_distributed_training(
-        global_rank,
-        world_size,
-        args.master_addr,
-        args.master_port,
-        args.backend,
-        args.gpu_per_node,
-        args.data_path,
-        args.split,
-        args.batch_size,
-        args.arrow_batch,
+        rank=global_rank,
+        world_size=world_size,
+        master_addr=args.master_addr,
+        master_port=args.master_port,
+        backend=args.backend,
+        gpu_per_node=args.gpu_per_node,
+        data_path=args.data_path,
+        split=args.split,
+        batch_size=args.batch_size,
+        arrow_batch=args.arrow_batch,
+        entropy_model_checkpoint_dir=args.entropy_model_checkpoint_dir,
     )
 
 
