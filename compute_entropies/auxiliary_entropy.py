@@ -202,7 +202,7 @@ def init_distributed_training(
 
     map_location = {"cuda:%d" % 0: "cuda:%d" % rank}
     model = load_entropy_model(entropy_model_checkpoint_dir, map_location=map_location)
-    model.to_bfloat16_except_poles_residues()
+    model = model.to(torch.bfloat16)
     model.to(rank)
     model.eval()
 
