@@ -270,7 +270,6 @@ def init_distributed_training(
                         scores = (
                             scores.cpu()
                             .contiguous()
-                            .view(torch.uint16)
                             .numpy()
                             .astype(np.float16)
                         )
