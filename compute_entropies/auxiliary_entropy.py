@@ -16,6 +16,7 @@ from datasets import config, load_dataset
 from bytelatent.transformer import LMTransformer, LMTransformerArgs
 from bytelatent.blt_tokenizers.constants import BOE_ID, BOS_ID, EOS_ID, OFFSET, PAD_ID
 
+SEQ_LENGTH = 8192
 
 # from stripedhyena.utils import dotdict
 # from stripedhyena.model import StripedHyena
@@ -27,24 +28,51 @@ import time
 # Collate function (unchanged)
 # -------------------------------------------------------------------------
 def collate(sequences: list):
+    # Pad to max length in the batch
     text = [s["text"] for s in sequences]
     record = [s["record"] for s in sequences]
-
-    byte_sequences = []
-    for s in text:
-        bytes_array = np.frombuffer(bytearray(s.encode("utf-8")), dtype=np.uint8)
-        bytes_array = np.pad(bytes_array, (1, 1), constant_values=(BOS_ID, EOS_ID))
-        byte_sequences.append(torch.from_numpy(bytes_array.copy()).long())
-
     return (
         pad_sequence(
-            byte_sequences,
+            [
+                torch.from_numpy(
+                    np.frombuffer(bytearray(s.encode("utf-8")), dtype=np.uint8)
+                )
+                for s in text
+            ],
             batch_first=True,
-            padding_value=PAD_ID,
+            padding_value=0,
         ),
         record,
         text,
     )
+
+
+def collate(sequences: list):
+    text = [s["text"] for s in sequences]
+    record = [s["record"] for s in sequences]
+
+    # Process each sequence
+    processed_seqs = []
+    for s in text:
+        # Convert to bytes and numpy array
+        bytes_array = np.frombuffer(s.encode("utf-8"), dtype=np.uint8)
+
+        # Truncate if needed (leave room for BOS/EOS)
+        if len(bytes_array) > SEQ_LENGTH - 2:
+            bytes_array = bytes_array[: SEQ_LENGTH - 2]
+
+        # Add BOS and EOS tokens
+        bytes_array = np.pad(bytes_array, (1, 1), constant_values=(BOS_ID, EOS_ID))
+
+        # Pad to max sequence length
+        if len(bytes_array) < SEQ_LENGTH:
+            bytes_array = np.pad(
+                bytes_array, (0, SEQ_LENGTH - len(bytes_array)), constant_values=PAD_ID
+            )
+
+        processed_seqs.append(torch.from_numpy(bytes_array.copy()).long())
+
+    return (torch.stack(processed_seqs), record, text)
 
 
 # -------------------------------------------------------------------------
