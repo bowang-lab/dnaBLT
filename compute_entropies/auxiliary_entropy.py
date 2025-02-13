@@ -270,8 +270,8 @@ def init_distributed_training(
                         scores = (
                             scores.cpu()
                             .contiguous()
-                            .numpy()
                             .view(torch.float16)
+                            .numpy()
                         )
 
                         bsz_ = len(scores)
