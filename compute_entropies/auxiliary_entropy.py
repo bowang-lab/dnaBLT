@@ -27,17 +27,14 @@ import time
 # Collate function (unchanged)
 # -------------------------------------------------------------------------
 def collate(sequences: list):
-
     text = [s["text"] for s in sequences]
     record = [s["record"] for s in sequences]
 
-    # Convert each sequence with BOS/EOS tokens
     byte_sequences = []
     for s in text:
         bytes_array = np.frombuffer(bytearray(s.encode("utf-8")), dtype=np.uint8)
-        # Add BOS and EOS tokens
         bytes_array = np.pad(bytes_array, (1, 1), constant_values=(BOS_ID, EOS_ID))
-        byte_sequences.append(torch.from_numpy(bytes_array))
+        byte_sequences.append(torch.from_numpy(bytes_array.copy()).long())
 
     return (
         pad_sequence(
