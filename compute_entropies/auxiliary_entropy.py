@@ -59,6 +59,13 @@ def entropy(scores):
     return -p_log_p.sum(dim=-1)
 
 
+def entropy(logits):
+    """Compute entropy from logits."""
+    probs = torch.softmax(logits, dim=-1)
+    entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1)
+    return entropy
+
+
 def calculate_entropies(tokens: torch.tensor, model: torch.nn.Module, device):
     """
     tokens: [batch_size, seq_len]
