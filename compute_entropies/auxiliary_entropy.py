@@ -116,7 +116,7 @@ def calculate_entropies(tokens: torch.tensor, model: torch.nn.Module, device):
 
         for split in splits:
             pad_size = (MAX_LENGTH - (split.numel() % MAX_LENGTH)) % MAX_LENGTH
-            pad = torch.zeros(pad_size, dtype=split.dtype, device=split.device)
+            pad = PAD_ID * torch.ones(pad_size, dtype=split.dtype, device=split.device)
             split = torch.cat((split, pad), dim=0)
             split = split.reshape(-1, MAX_LENGTH)
 
