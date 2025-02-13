@@ -14,6 +14,7 @@ from torch.nn.utils.rnn import pad_sequence
 from rich.progress import Progress, TextColumn
 from datasets import config, load_dataset
 from bytelatent.transformer import LMTransformer, LMTransformerArgs
+from bytelatent.blt_tokenizers.constants import BOE_ID, BOS_ID, EOS_ID, OFFSET, PAD_ID
 
 
 # from stripedhyena.utils import dotdict
@@ -26,19 +27,23 @@ import time
 # Collate function (unchanged)
 # -------------------------------------------------------------------------
 def collate(sequences: list):
-    # Pad to max length in the batch
+
     text = [s["text"] for s in sequences]
     record = [s["record"] for s in sequences]
+
+    # Convert each sequence with BOS/EOS tokens
+    byte_sequences = []
+    for s in text:
+        bytes_array = np.frombuffer(bytearray(s.encode("utf-8")), dtype=np.uint8)
+        # Add BOS and EOS tokens
+        bytes_array = np.pad(bytes_array, (1, 1), constant_values=(BOS_ID, EOS_ID))
+        byte_sequences.append(torch.from_numpy(bytes_array))
+
     return (
         pad_sequence(
-            [
-                torch.from_numpy(
-                    np.frombuffer(bytearray(s.encode("utf-8")), dtype=np.uint8)
-                )
-                for s in text
-            ],
+            byte_sequences,
             batch_first=True,
-            padding_value=0,
+            padding_value=PAD_ID,
         ),
         record,
         text,
@@ -267,12 +272,7 @@ def init_distributed_training(
 
                         # Calculate entropies
                         scores = calculate_entropies(tokens, entropy_model, device=rank)
-                        scores = (
-                            scores.cpu()
-                            .contiguous()
-                            .view(torch.float16)
-                            .numpy()
-                        )
+                        scores = scores.cpu().contiguous().view(torch.float16).numpy()
 
                         bsz_ = len(scores)
                         tot_bsz_ += bsz_
