@@ -116,9 +116,10 @@ def calculate_entropies(tokens: torch.tensor, model: torch.nn.Module, device):
 
         for split in splits:
             pad_size = (MAX_LENGTH - (split.numel() % MAX_LENGTH)) % MAX_LENGTH
-            pad = torch.full((pad_size,), PAD_ID, dtype=split.dtype, device=split.device)
+            pad = torch.zeros(pad_size, dtype=split.dtype, device=split.device)
             split = torch.cat((split, pad), dim=0)
             split = split.reshape(-1, MAX_LENGTH)
+
             split = split.to(device)
 
             # Forward pass | Evo
