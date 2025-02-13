@@ -113,9 +113,13 @@ class LMTransformer(BaseTransformer):
             if self.return_dict:
                 return {"logits": logits, "loss": loss}
             else:
-                return {"logits": logits, "loss": loss}
+                return loss
 
-        return logits
+        elif self.return_dict:
+            return {"logits": logits, "loss": None}
+
+        else:
+            return logits
 
     def reset_parameters(self, init_std=None):
         # Either use fixed base std or sqrt model dim
