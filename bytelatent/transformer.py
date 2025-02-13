@@ -113,7 +113,7 @@ class LMTransformer(BaseTransformer):
             if self.return_dict:
                 return {"logits": logits, "loss": loss}
             else:
-                return loss
+                return {"logits": logits, "loss": loss}
 
         return logits
 
