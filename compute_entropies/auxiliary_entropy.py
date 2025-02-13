@@ -80,8 +80,15 @@ def calculate_entropies(tokens: torch.tensor, model: torch.nn.Module, device):
 
             split = split.to(device)
 
-            # Forward pass
-            pred, _ = model(split)  # => [batch, max_length, vocab]
+            # Forward pass | Evo
+            # pred, _ = model(split)  # => [batch, max_length, vocab]
+
+            # Forward pass | ByteLatent
+            outputs = model(
+                split, attn_impl="xformers"
+            )  # => [batch, max_length, vocab]
+            pred = outputs["logits"]
+
             # Remove padding
             pred = pred.reshape(-1, pred.shape[-1])[: split.numel() - pad_size, :]
 
@@ -207,7 +214,7 @@ def init_distributed_training(
     model.eval()
 
     # Move to device and wrap with DDP
-    entropy_model = model  #DDP(model, device_ids=[rank])
+    entropy_model = model  # DDP(model, device_ids=[rank])
 
     # ---------------------------------------------------------------------
     # 4. Prepare Arrow writing
