@@ -121,6 +121,7 @@ def load_entropy_model(checkpoint_dir, map_location):
     state_dict = torch.load(checkpoint_dir, map_location=map_location)["state_dict"]
     state_dict = {k.replace("model.", ""): v for k, v in state_dict.items()}
     entropy_model.load_state_dict(state_dict, strict=True)
+    entropy_model.return_dict = True
 
     # no grads for the model:
     for param in entropy_model.parameters():
