@@ -16,7 +16,7 @@ from datasets import config, load_dataset
 from bytelatent.transformer import LMTransformer, LMTransformerArgs
 from bytelatent.blt_tokenizers.constants import BOE_ID, BOS_ID, EOS_ID, OFFSET, PAD_ID
 
-SEQ_LENGTH = 8192
+MAX_LENGTH = 8192
 
 # from stripedhyena.utils import dotdict
 # from stripedhyena.model import StripedHyena
@@ -53,7 +53,7 @@ def collate(sequences: list):
 
     # Find max length in batch to avoid unnecessary padding
     max_len = min(
-        max(len(s.encode("utf-8")) for s in text) + 2, SEQ_LENGTH  # +2 for BOS/EOS
+        max(len(s.encode("utf-8")) for s in text) + 2, MAX_LENGTH  # +2 for BOS/EOS
     )
 
     # Process each sequence
@@ -108,27 +108,26 @@ def calculate_entropies(tokens: torch.tensor, model: torch.nn.Module, device):
     """
     with torch.no_grad():
         entropies = []
-        # max_length = getattr(model, "max_length", 8192)
-        max_length = 8192
-        batch_numel = max_length * tokens.size(0)
+        # MAX_LENGTH = getattr(model, "MAX_LENGTH", 8192)
+        batch_numel = MAX_LENGTH * tokens.size(0)
 
-        # Flatten and split into blocks of (batch_size * max_length)
+        # Flatten and split into blocks of (batch_size * MAX_LENGTH)
         splits = torch.split(tokens.flatten(), batch_numel)
-        for split in splits:
-            pad_size = (max_length - (split.numel() % max_length)) % max_length
-            pad = torch.zeros(pad_size, dtype=split.dtype, device=split.device)
-            split = torch.cat((split, pad), dim=0)
-            split = split.reshape(-1, max_length)
 
+        for split in splits:
+            pad_size = (MAX_LENGTH - (split.numel() % MAX_LENGTH)) % MAX_LENGTH
+            pad = torch.full((pad_size,), PAD_ID, dtype=split.dtype, device=split.device)
+            split = torch.cat((split, pad), dim=0)
+            split = split.reshape(-1, MAX_LENGTH)
             split = split.to(device)
 
             # Forward pass | Evo
-            # pred, _ = model(split)  # => [batch, max_length, vocab]
+            # pred, _ = model(split)  # => [batch, MAX_LENGTH, vocab]
 
             # Forward pass | ByteLatent
             outputs = model(
                 split, attn_impl="xformers"
-            )  # => [batch, max_length, vocab]
+            )  # => [batch, MAX_LENGTH, vocab]
             pred = outputs["logits"]
 
             # Remove padding
