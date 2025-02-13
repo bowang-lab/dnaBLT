@@ -57,7 +57,7 @@ stdbuf -oL -eL srun --exclusive python3 compute_entropies/auxiliary_entropy.py \
     --gpu_per_node 2 \
     --data_path $data_path \
     --data_cache_dir $data_path/cache \
-    --split test \
+    --split validation \
     --batch_size 4 \
     --arrow_batch 10 \
     --entropy_model_checkpoint_dir $checkpoints_dir/last.ckpt
