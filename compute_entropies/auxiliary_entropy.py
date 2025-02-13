@@ -109,9 +109,12 @@ def load_entropy_model(checkpoint_dir, map_location):
             max_seqlen=8192,
             ffn_dim_multiplier=1,
             vocab_size=260,
+            sliding_window=512,
+            seed=42,
+            norm_eps=1e-5,
+            return_dict=True,
             attn_bias_type="local_block_causal",
             attn_impl="xformers",
-            sliding_window=512,
         )
     )
 
