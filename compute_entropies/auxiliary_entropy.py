@@ -51,6 +51,11 @@ def collate(sequences: list):
     text = [s["text"] for s in sequences]
     record = [s["record"] for s in sequences]
 
+    # Find max length in batch to avoid unnecessary padding
+    max_len = min(
+        max(len(s.encode("utf-8")) for s in text) + 2, SEQ_LENGTH  # +2 for BOS/EOS
+    )
+
     # Process each sequence
     processed_seqs = []
     for s in text:
@@ -58,16 +63,16 @@ def collate(sequences: list):
         bytes_array = np.frombuffer(s.encode("utf-8"), dtype=np.uint8)
 
         # Truncate if needed (leave room for BOS/EOS)
-        if len(bytes_array) > SEQ_LENGTH - 2:
-            bytes_array = bytes_array[: SEQ_LENGTH - 2]
+        if len(bytes_array) > max_len - 2:
+            bytes_array = bytes_array[: max_len - 2]
 
         # Add BOS and EOS tokens
         bytes_array = np.pad(bytes_array, (1, 1), constant_values=(BOS_ID, EOS_ID))
 
-        # Pad to max sequence length
-        if len(bytes_array) < SEQ_LENGTH:
+        # Pad to max length in batch
+        if len(bytes_array) < max_len:
             bytes_array = np.pad(
-                bytes_array, (0, SEQ_LENGTH - len(bytes_array)), constant_values=PAD_ID
+                bytes_array, (0, max_len - len(bytes_array)), constant_values=PAD_ID
             )
 
         processed_seqs.append(torch.from_numpy(bytes_array.copy()).long())
