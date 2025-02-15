@@ -1,0 +1,14 @@
+Processed 4 batches in 27.37005877494812 seconds
+Processed 8 batches in 32.47394895553589 seconds
+Processed 12 batches in 36.7550892829895 seconds
+Processed 16 batches in 44.20282554626465 seconds
+Processed 20 batches in 50.77568054199219 seconds
+Processed 24 batches in 64.80778193473816 seconds
+Processed 28 batches in 69.95643353462219 seconds
+Processed 32 batches in 133.21621799468994 seconds
+Processed 36 batches in 150.549569606781 seconds
+Processed 40 batches in 152.99554133415222 seconds
+Processed 44 batches in 157.30074429512024 seconds
+Processed 48 batches in 161.03668594360352 seconds
+Processed 52 batches in 212.73770403862 seconds
+Processed 53 batches in 213.30353021621704 seconds
