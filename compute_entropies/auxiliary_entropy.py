@@ -120,7 +120,6 @@ def init_distributed_training(
     split,
     batch_size,
     arrow_batch=10,
-    entropy_model_checkpoint_dir="",
 ):
     # Set environment variables for master address and port
     os.environ["MASTER_ADDR"] = master_addr
@@ -310,7 +309,6 @@ def main_worker(local_rank, args):
         split=args.split,
         batch_size=args.batch_size,
         arrow_batch=args.arrow_batch,
-        entropy_model_checkpoint_dir=args.entropy_model_checkpoint_dir,
     )
 
 
@@ -369,6 +367,7 @@ if __name__ == "__main__":
 
     # Use mp.spawn to launch multiple processes, each corresponding to a GPU
 
+    os.environ["HF_HOME"] = args.data_path
     os.environ["HF_DATASETS_CACHE"] = args.data_cache_dir
     config.HF_DATASETS_CACHE = args.data_cache_dir
 
