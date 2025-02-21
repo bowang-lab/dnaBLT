@@ -12,7 +12,7 @@ from torch.nn.utils.rnn import pad_sequence
 
 from rich.progress import Progress, TextColumn
 from datasets import config, load_dataset
-from evo import Evo
+from evo2 import Evo2
 
 MAX_LENGTH = 8192
 
@@ -42,7 +42,7 @@ def collate(sequences: list):
                 for s in text
             ],
             batch_first=True,
-            padding_value=1,
+            padding_value=1,  # StripedHyena CharTokenizer pad token. eod and eos are 0.
         ),
         record,
         text,
@@ -86,8 +86,9 @@ def calculate_entropies(tokens: torch.tensor, model: torch.nn.Module, device):
 
             split = split.to(device)
 
-            # Forward pass | Evo
-            pred, _ = model(split)  # => [batch, MAX_LENGTH, vocab]
+            # NOTE: StripedHyena2 seems to output some "inference_params_dict_out" object that we don't need.
+            outputs, _ = model(split)  # => [batch, MAX_LENGTH, vocab]
+            pred = outputs[0]
 
             # Remove padding
             pred = pred.reshape(-1, pred.shape[-1])[: split.numel() - pad_size, :]
@@ -169,8 +170,7 @@ def init_distributed_training(
     # 3. Load model & wrap with DistributedDataParallel
     # ---------------------------------------------------------------------
 
-    evo_model = Evo("evo-1-8k-base")
-    model = evo_model.model
+    model = Evo2("evo2-1b-base")
     # with open("evo-1-8k-base_inference.yml", "r") as f:
     #     gconfig = yaml.load(f, Loader=yaml.SafeLoader)
     #
