@@ -170,21 +170,7 @@ def init_distributed_training(
     # 3. Load model & wrap with DistributedDataParallel
     # ---------------------------------------------------------------------
 
-    model = Evo2("evo2-1b-base")
-    # with open("evo-1-8k-base_inference.yml", "r") as f:
-    #     gconfig = yaml.load(f, Loader=yaml.SafeLoader)
-    #
-    # global_config = dotdict(gconfig)
-    # map_location = {"cuda:%d" % 0: "cuda:%d" % rank}
-    # state_dict_evo = torch.load("evo7b_state_dict.pt", map_location=map_location)
-    # model = StripedHyena(global_config)
-    # model.load_state_dict(state_dict_evo, strict=True)
-    # model.to_bfloat16_except_poles_residues()
-    model.to(rank)
-    model.eval()
-
-    # Move to device and wrap with DDP
-    entropy_model = model  # DDP(model, device_ids=[rank])
+    entropy_model = Evo2("evo2-1b-base")
 
     # ---------------------------------------------------------------------
     # 4. Prepare Arrow writing
