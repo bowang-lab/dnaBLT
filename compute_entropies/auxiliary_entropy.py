@@ -170,7 +170,7 @@ def init_distributed_training(
     # 3. Load model & wrap with DistributedDataParallel
     # ---------------------------------------------------------------------
 
-    entropy_model = Evo2("evo2-1b-base")
+    entropy_model = Evo2("evo2_1b_base")
 
     # ---------------------------------------------------------------------
     # 4. Prepare Arrow writing
