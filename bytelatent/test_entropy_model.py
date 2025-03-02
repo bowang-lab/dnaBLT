@@ -25,6 +25,7 @@ def test_entropy_model():
         row_num=0,
         arrow_batch_size=100,
         s3_profile=None,
+        file_format="arrow",
     )
     arrow_file = initial_state.build()
     tokenizer_args = TokenizerArgs(

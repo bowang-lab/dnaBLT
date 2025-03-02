@@ -6,7 +6,10 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict
 
 from bytelatent.data.data_types import BltSequence
-from bytelatent.data.iterators.abstract_iterator import IteratorState, StatefulIterator
+from bytelatent.data.iterators.abstract_iterator import (
+    PydanticIteratorState,
+    StatefulIterator,
+)
 from bytelatent.data.iterators.preprocess_iterator import (
     PreprocessIterator,
     PreprocessIteratorState,
@@ -21,11 +24,12 @@ class SequencePackingArgs(BaseModel):
     buffer_size: int
 
 
-class SequenceIteratorState(BaseModel, IteratorState):
+class SequenceIteratorState(PydanticIteratorState):
     model_config = ConfigDict(extra="forbid")
     sequence_packing_args: SequencePackingArgs
     preprocess_iterator_state: PreprocessIteratorState
-    rng_state: dict[str, Any]
+    # If None, rng is disabled.
+    rng_state: dict[str, Any] | None
 
     def build(self):
         preprocess_iterator = self.preprocess_iterator_state.build()
@@ -41,22 +45,25 @@ class SequenceIterator(StatefulIterator):
         self,
         preprocess_iterator: PreprocessIterator,
         *,
-        rng_state: dict[str, Any],
+        rng_state: dict[str, Any] | None,
         sequence_packing_args: SequencePackingArgs,
     ):
         self.preprocess_iterator = preprocess_iterator
         self.sequence_packing_args = sequence_packing_args
         self.output_seq_len = sequence_packing_args.output_seq_len
         self.buffer_size = sequence_packing_args.buffer_size
-        self.rng = np.random.default_rng()
-        self.rng.bit_generator.state = rng_state
+        if rng_state is None:
+            self.rng = None
+        else:
+            self.rng = np.random.default_rng()
+            self.rng.bit_generator.state = rng_state
 
     def get_state(self):
         # TODO: need to also perist the current shuffle buffer
         return SequenceIteratorState(
             sequence_packing_args=self.sequence_packing_args,
             preprocess_iterator_state=self.preprocess_iterator.get_state(),
-            rng_state=self.rng.bit_generator.state,
+            rng_state=None if self.rng is None else self.rng.bit_generator.state,
         )
 
     def create_iter(self):
@@ -114,7 +121,12 @@ class SequenceIterator(StatefulIterator):
 
                 seq_patch_lengths: list[list[int]] = x_patches.tolist()
                 assert len(seq_patch_lengths) == self.buffer_size
-                for idx in self.rng.permutation(len(seq_patch_lengths)):
+                if self.rng is None:
+                    permutations = list(range(len(seq_patch_lengths)))
+                else:
+                    permutations = self.rng.permutation(len(seq_patch_lengths))
+
+                for idx in permutations:
                     assert len(seq_patch_lengths[idx]) == self.output_seq_len
                     assert (
                         sum(seq_patch_lengths[idx])

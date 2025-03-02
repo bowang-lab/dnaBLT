@@ -218,7 +218,7 @@ def init_distributed_training(
     # data = datasets.load_dataset(
     #     "parquet", data_files=test_files, split="test"
     # ).with_format("torch")
-    data = load_dataset(f"{data_path}/stage1", split=split).with_format("torch")
+    data = load_dataset(f"{data_path}/stage1", split=`split`).with_format("torch")
 
     # Standard PyTorch DistributedSampler (removes your custom length-sorting).
     # If you need length-based sorting globally, you need a custom distributed sampler.

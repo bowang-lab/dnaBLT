@@ -170,3 +170,5 @@ internal/
 .hf_cache
 jobs_parallel-copy/
 wandb/
+*.ipynb
+

@@ -6,7 +6,7 @@ from typing import Any, List, Optional, Tuple, Union
 import torch
 import torch.nn
 import torch.nn as nn
-from pydantic import BaseModel, ConfigDict
+from pydantic import ConfigDict
 from torch.nn import functional as F
 from torch.nn.attention.flex_attention import BlockMask
 from xformers.ops import AttentionBias
@@ -14,7 +14,6 @@ from xformers.ops import AttentionBias
 from bytelatent.base_transformer import (
     BaseTransformerArgs,
     InitStdFactor,
-    RMSNorm,
     RotaryEmbedding,
     TransformerBlock,
 )
@@ -23,6 +22,13 @@ from bytelatent.model.utils import create_causal_mask, downsample
 from bytelatent.blt_tokenizers.blt_tokenizer import BOE_ID
 
 logger = logging.getLogger()
+try:
+    from apex.normalization.fused_layer_norm import FusedRMSNorm
+
+    RMSNorm = FusedRMSNorm
+except (ImportError, ModuleNotFoundError):
+    logging.debug("Apex not found. Using nn.RMSNorm")
+    RMSNorm = nn.RMSNorm
 
 
 class LocalModelArgs(BaseTransformerArgs):

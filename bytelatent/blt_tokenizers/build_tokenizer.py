@@ -55,8 +55,6 @@ class TokenizerArgs(BaseModel):
             init_kwargs = self.init_kwargs
         if self.name == "blt":
             return BltTokenizer(**init_kwargs)
-        elif self.name == "bytes":
-            return ByteTokenizer(**init_kwargs)
         elif self.name == "mock":
             return MockTokenizer(**init_kwargs)
         elif self.name == "sp":

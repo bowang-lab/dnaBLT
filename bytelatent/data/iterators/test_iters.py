@@ -1,81 +1,13 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-import pandas as pd
-from pydantic import BaseModel
 
 from bytelatent.constants import BLT_DATA
-from bytelatent.data.data_types import BltExample
-from bytelatent.data.iterators.abstract_iterator import IteratorState, StatefulIterator
+from bytelatent.data.iterators.dev_iterators import (
+    BltTestIterator,
+    BltTestWithEntropiesIterator,
+)
 from bytelatent.data.iterators.preprocess_iterator import PreprocessIterator
 from bytelatent.data.patcher import PatcherArgs, PatchingModeEnum
 from bytelatent.blt_tokenizers.build_tokenizer import TokenizerArgs
-
-
-class BltTestIteratorState(BaseModel, IteratorState):
-    position: int
-    total: int
-
-    def build(self):
-        blt_iter = BltTestIteratorState(total=self.total)
-        blt_iter.position = self.position
-        return blt_iter
-
-
-class BltTestIterator(StatefulIterator):
-    def __init__(self, total: int):
-        self.position = 0
-        self.total = total
-
-    def get_state(self):
-        return BltTestIteratorState(position=self.position, total=self.total)
-
-    def create_iter(self):
-        for i in range(self.total):
-            self.position += 1
-            yield BltExample(
-                sample_id=f"test_{i}",
-                text=f"This is some test {i} text.",
-                tokens=None,
-                mask=None,
-                entropies=None,
-                patch_lengths=None,
-            )
-
-
-class BltTestWithEntropiesIteratorState(BaseModel, IteratorState):
-    position: int
-    total: int
-
-    def build(self):
-        blt_iter = BltTestWithEntropiesIteratorState(total=self.total)
-        blt_iter.position = self.position
-        return blt_iter
-
-
-class BltTestWithEntropiesIterator(StatefulIterator):
-    def __init__(self, total: int):
-        self.position = 0
-        self.total = total
-
-    def get_state(self):
-        return BltTestIteratorState(position=self.position, total=self.total)
-
-    def create_iter(self):
-        text = "Daenerys Targaryen is in Game of Thrones, a fantasy epic by George R.R. Martin."
-        df = pd.read_json("fixtures/tokens_with_entropies.json")
-        tokens = df["token_ids"].tolist()
-        entropies = df["entropies"].tolist()
-        # BOS and EOS
-        assert len(tokens) == len(text) + 2
-        for i in range(self.total):
-            self.position += 1
-            yield BltExample(
-                sample_id=f"test_{i}",
-                text=text,
-                tokens=tokens,
-                mask=[True] * len(tokens),
-                entropies=entropies,
-                patch_lengths=None,
-            )
 
 
 def test_preprocess_iter():

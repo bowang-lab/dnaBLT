@@ -1,14 +1,16 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-from pydantic import BaseModel
 
-from bytelatent.data.iterators.abstract_iterator import IteratorState, StatefulIterator
+from bytelatent.data.iterators.abstract_iterator import (
+    PydanticIteratorState,
+    StatefulIterator,
+)
 from bytelatent.data.iterators.arrow_iterator import (
     ArrowFileIterator,
     ArrowFileIteratorState,
 )
 
 
-class LoopingIteratorState(BaseModel, IteratorState):
+class LoopingIteratorState(PydanticIteratorState):
     file_iterator_state: ArrowFileIteratorState
     epoch: int
 
