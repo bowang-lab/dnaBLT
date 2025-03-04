@@ -1,4 +1,5 @@
 import os
+import time
 import argparse
 import fsspec
 import numpy as np
@@ -6,22 +7,14 @@ import pyarrow as pa
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
-from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.nn.utils.rnn import pad_sequence
 
-# from evo import Evo
 from rich.progress import Progress, TextColumn
 from datasets import config, load_dataset
-from bytelatent.transformer import LMTransformer, LMTransformerArgs
-from bytelatent.blt_tokenizers.constants import BOE_ID, BOS_ID, EOS_ID, OFFSET, PAD_ID
+from evo2 import Evo2
 
 MAX_LENGTH = 8192
-
-# from stripedhyena.utils import dotdict
-# from stripedhyena.model import StripedHyena
-import yaml
-import time
 
 
 # -------------------------------------------------------------------------
@@ -31,53 +24,29 @@ def collate(sequences: list):
     # Pad to max length in the batch
     text = [s["text"] for s in sequences]
     record = [s["record"] for s in sequences]
+    bos_token = torch.tensor(
+        [0], dtype=torch.uint8
+    )  # Beginning of sequence token in EVO
+
     return (
         pad_sequence(
             [
-                torch.from_numpy(
-                    np.frombuffer(bytearray(s.encode("utf-8")), dtype=np.uint8)
+                torch.cat(
+                    (
+                        bos_token,
+                        torch.from_numpy(
+                            np.frombuffer(bytearray(s.encode("utf-8")), dtype=np.uint8)
+                        ),
+                    )
                 )
                 for s in text
             ],
             batch_first=True,
-            padding_value=0,
+            padding_value=1,  # StripedHyena CharTokenizer pad token. eod and eos are 0.
         ),
         record,
         text,
     )
-
-
-def collate(sequences: list):
-    text = [s["text"] for s in sequences]
-    record = [s["record"] for s in sequences]
-
-    # Find max length in batch to avoid unnecessary padding
-    max_len = min(
-        max(len(s.encode("utf-8")) for s in text) + 2, MAX_LENGTH  # +2 for BOS/EOS
-    )
-
-    # Process each sequence
-    processed_seqs = []
-    for s in text:
-        # Convert to bytes and numpy array
-        bytes_array = np.frombuffer(s.encode("utf-8"), dtype=np.uint8)
-
-        # Truncate if needed (leave room for BOS/EOS)
-        if len(bytes_array) > max_len - 2:
-            bytes_array = bytes_array[: max_len - 2]
-
-        # Add BOS and EOS tokens
-        bytes_array = np.pad(bytes_array, (1, 1), constant_values=(BOS_ID, EOS_ID))
-
-        # Pad to max length in batch
-        if len(bytes_array) < max_len:
-            bytes_array = np.pad(
-                bytes_array, (0, max_len - len(bytes_array)), constant_values=PAD_ID
-            )
-
-        processed_seqs.append(torch.from_numpy(bytes_array.copy()).long())
-
-    return (torch.stack(processed_seqs), record, text)
 
 
 # -------------------------------------------------------------------------
@@ -92,13 +61,6 @@ def entropy(scores):
     probs = torch.exp(log_probs)
     p_log_p = log_probs * probs
     return -p_log_p.sum(dim=-1)
-
-
-def entropy(logits):
-    """Compute entropy from logits."""
-    probs = torch.softmax(logits, dim=-1)
-    entropy = -torch.sum(probs * torch.log(probs + 1e-10), dim=-1)
-    return entropy
 
 
 def calculate_entropies(tokens: torch.tensor, model: torch.nn.Module, device):
@@ -116,20 +78,17 @@ def calculate_entropies(tokens: torch.tensor, model: torch.nn.Module, device):
 
         for split in splits:
             pad_size = (MAX_LENGTH - (split.numel() % MAX_LENGTH)) % MAX_LENGTH
-            pad = PAD_ID * torch.ones(pad_size, dtype=split.dtype, device=split.device)
+            pad = torch.ones(
+                pad_size, dtype=split.dtype, device=split.device
+            )  # Evo tokenizer pad is 1
             split = torch.cat((split, pad), dim=0)
             split = split.reshape(-1, MAX_LENGTH)
 
             split = split.to(device)
 
-            # Forward pass | Evo
-            # pred, _ = model(split)  # => [batch, MAX_LENGTH, vocab]
-
-            # Forward pass | ByteLatent
-            outputs = model(
-                split, attn_impl="xformers"
-            )  # => [batch, MAX_LENGTH, vocab]
-            pred = outputs["logits"]
+            # NOTE: StripedHyena2 seems to output some "inference_params_dict_out" object that we don't need.
+            outputs, _ = model(split)  # => [batch, MAX_LENGTH, vocab]
+            pred = outputs[0]
 
             # Remove padding
             pred = pred.reshape(-1, pred.shape[-1])[: split.numel() - pad_size, :]
@@ -140,35 +99,6 @@ def calculate_entropies(tokens: torch.tensor, model: torch.nn.Module, device):
         concat_entropies = torch.cat(entropies, dim=0)
         concat_entropies = concat_entropies.reshape(tokens.shape)
     return concat_entropies
-
-
-def load_entropy_model(checkpoint_dir, map_location):
-    entropy_model = LMTransformer(
-        LMTransformerArgs(
-            dim=768,
-            n_layers=14,
-            n_heads=12,
-            max_seqlen=8192,
-            ffn_dim_multiplier=1,
-            vocab_size=260,
-            sliding_window=512,
-            seed=42,
-            norm_eps=1e-5,
-            return_dict=True,
-            attn_bias_type="local_block_causal",
-            attn_impl="xformers",
-        )
-    )
-
-    state_dict = torch.load(checkpoint_dir, map_location=map_location)["state_dict"]
-    state_dict = {k.replace("model.", ""): v for k, v in state_dict.items()}
-    entropy_model.load_state_dict(state_dict, strict=True)
-
-    # no grads for the model:
-    for param in entropy_model.parameters():
-        param.requires_grad = False
-
-    return entropy_model
 
 
 # test_files = {
@@ -191,7 +121,6 @@ def init_distributed_training(
     split,
     batch_size,
     arrow_batch=10,
-    entropy_model_checkpoint_dir="",
 ):
     # Set environment variables for master address and port
     os.environ["MASTER_ADDR"] = master_addr
@@ -223,7 +152,10 @@ def init_distributed_training(
     # Standard PyTorch DistributedSampler (removes your custom length-sorting).
     # If you need length-based sorting globally, you need a custom distributed sampler.
     dist_sampler = DistributedSampler(
-        data, num_replicas=world_size, rank=rank, shuffle=True  # or False, up to you
+        data,
+        num_replicas=world_size,
+        rank=rank,
+        shuffle=True,  # or False, up to you
     )
 
     dataloader = DataLoader(
@@ -238,28 +170,7 @@ def init_distributed_training(
     # 3. Load model & wrap with DistributedDataParallel
     # ---------------------------------------------------------------------
 
-    # evo_model = Evo('evo-1-8k-base')
-    # entropy_model = evo_model.model
-    # with open("evo-1-8k-base_inference.yml", "r") as f:
-    #     gconfig = yaml.load(f, Loader=yaml.SafeLoader)
-
-    # global_config = dotdict(gconfig)
-    # map_location = {"cuda:%d" % 0: "cuda:%d" % rank}
-    # state_dict_evo = torch.load("evo7b_state_dict.pt", map_location=map_location)
-    # model = StripedHyena(global_config)
-    # model.load_state_dict(state_dict_evo, strict=True)
-    # model.to_bfloat16_except_poles_residues()
-    # model.to(rank)
-    # model.eval()
-
-    map_location = {"cuda:%d" % 0: "cuda:%d" % rank}
-    model = load_entropy_model(entropy_model_checkpoint_dir, map_location=map_location)
-    model = model.to(torch.bfloat16)
-    model.to(rank)
-    model.eval()
-
-    # Move to device and wrap with DDP
-    entropy_model = model  # DDP(model, device_ids=[rank])
+    entropy_model = Evo2("evo2_1b_base", rank)
 
     # ---------------------------------------------------------------------
     # 4. Prepare Arrow writing
@@ -384,7 +295,6 @@ def main_worker(local_rank, args):
         split=args.split,
         batch_size=args.batch_size,
         arrow_batch=args.arrow_batch,
-        entropy_model_checkpoint_dir=args.entropy_model_checkpoint_dir,
     )
 
 
@@ -438,17 +348,12 @@ if __name__ == "__main__":
         required=True,
         help="The directory to cache the Open Genome dataset",
     )
-    parser.add_argument(
-        "--entropy_model_checkpoint_dir",
-        type=str,
-        required=True,
-        help="The directory to load the entropy model checkpoint",
-    )
 
     args = parser.parse_args()
 
     # Use mp.spawn to launch multiple processes, each corresponding to a GPU
 
+    os.environ["HF_HOME"] = args.data_path
     os.environ["HF_DATASETS_CACHE"] = args.data_cache_dir
     config.HF_DATASETS_CACHE = args.data_cache_dir
 

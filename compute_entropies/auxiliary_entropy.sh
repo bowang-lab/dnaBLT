@@ -19,7 +19,7 @@ conda activate blt
 echo "Using $PYTHON_PATH"
 
 # Set directories (THIS IS ashah01'S T-ID MAKE SURE TO USE YOUR OWN)
-home_dir="/cluster/home/t136151uhn/dnaBLT"
+home_dir="/cluster/home/t136085uhn/dnaBLT"
 checkpoints_dir="/cluster/projects/bwanggroup/dnaBLT/checkpoints"
 data_path="/cluster/projects/bwanggroup/open-genome"
 cd $home_dir
@@ -60,4 +60,3 @@ stdbuf -oL -eL srun --exclusive python3 compute_entropies/auxiliary_entropy.py \
     --split validation \
     --batch_size 4 \
     --arrow_batch 10 \
-    --entropy_model_checkpoint_dir $checkpoints_dir/last.ckpt
