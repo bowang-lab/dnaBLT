@@ -1,6 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
-from dataclasses import dataclass
+import logging
 from typing import Optional, Tuple, Union
 
 import torch
@@ -14,15 +14,24 @@ from torch.distributed.tensor.parallel import (
     parallelize_module,
 )
 from torch.nn.attention.flex_attention import BlockMask, create_block_mask
-from xformers.ops import AttentionBias, fmha
+from xformers.ops import AttentionBias
 
 from bytelatent.base_transformer import (
     BaseTransformer,
     BaseTransformerArgs,
-    RMSNorm,
     cross_entropy,
 )
 from bytelatent.model.utils import create_causal_mask
+
+logger = logging.getLogger()
+
+try:
+    from apex.normalization.fused_layer_norm import FusedRMSNorm
+
+    RMSNorm = FusedRMSNorm
+except (ImportError, ModuleNotFoundError):
+    logging.debug("Apex not found. Using nn.RMSNorm")
+    RMSNorm = nn.RMSNorm
 
 
 def attention_flops_per_token(n_layers, seq_len, dim, causal):
@@ -122,10 +131,11 @@ class LMTransformer(BaseTransformer):
             return logits
 
     def reset_parameters(self, init_std=None):
-        # Either use fixed base std or sqrt model dim
-        super().reset_parameters()
-        init_std = init_std or (self.dim ** (-0.5))
         self.norm.reset_parameters()
+
+    def init_weights(self):
+        self.reset_parameters()
+        init_std = self.dim ** (-0.5)
         nn.init.trunc_normal_(
             self.tok_embeddings.weight,
             mean=0.0,
@@ -133,6 +143,8 @@ class LMTransformer(BaseTransformer):
             a=-3 * init_std,
             b=3 * init_std,
         )
+        super().init_weights()
+
         if not self.weight_tying:
             nn.init.trunc_normal_(
                 self.output.weight,
@@ -161,16 +173,16 @@ def build_fsdp_grouping_plan(model_args: LMTransformerArgs):
         group_plan.append(("output", True))
     else:
         for i in range(model_args.n_layers_local_encoder):
-            group_plan.append((f"local_encoder.layers.{i}", True))
-            group_plan.append((f"local_encoder.cross_attn_layers.{i}", True))
+            group_plan.append((f"local_encoder.layers.{i}", False))
+            group_plan.append((f"local_encoder.cross_attn_layers.{i}", False))
         for i in range(model_args.n_layers_local_decoder):
-            group_plan.append((f"local_decoder.layers.{i}", True))
-            group_plan.append((f"local_decoder.cross_attn_layers.{i}", True))
+            group_plan.append((f"local_decoder.layers.{i}", False))
+            group_plan.append((f"local_decoder.cross_attn_layers.{i}", False))
         for i in range(model_args.n_layers_global):
-            group_plan.append((f"global_transformer.layers.{i}", True))
+            group_plan.append((f"global_transformer.layers.{i}", False))
 
         for i in range(len(model_args.encoder_hash_byte_group_size)):
-            group_plan.append((f"encoder_hash_tok_embedding.{i}", True))
+            group_plan.append((f"encoder_hash_tok_embedding.{i}", False))
 
     return group_plan
 

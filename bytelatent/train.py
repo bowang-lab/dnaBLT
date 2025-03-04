@@ -23,9 +23,11 @@ from torch.distributed._tensor import DTensor
 from torch.distributed.checkpoint.stateful import Stateful
 from torch.optim import lr_scheduler
 
-from bytelatent.args import TrainArgs, parse_args
+from bytelatent.args import TrainArgs
 from bytelatent.checkpoint import CheckpointManager, load_from_checkpoint
+from bytelatent.config_parser import parse_args_to_pydantic_model
 from bytelatent.data.file_util import get_fs
+from bytelatent.data.iterators.abstract_iterator import get_state_and_refresh
 from bytelatent.data.iterators.multiprocess_iterator import (
     MultiprocessIterator,
     MultiprocessIteratorState,
@@ -35,7 +37,6 @@ from bytelatent.distributed import (
     check_model_value_range,
     clean_env,
     dist_mean,
-    dist_mean_dict,
     dist_sum,
     get_device_mesh,
     get_is_master,
@@ -88,6 +89,13 @@ def get_iterator_state_name(iterator_state):
         raise ValueError(f"Unsupported iterator to get name from: {iterator_state}")
 
 
+def to_py_num(num: int | float | torch.Tensor | np.ndarray) -> int | float:
+    if isinstance(num, (torch.Tensor, np.ndarray)):
+        return num.item()
+    else:
+        return num
+
+
 # TODO: Make this pydantic based instead of data class based
 # TODO: Generalize this to any iterator state
 @dataclass
@@ -130,6 +138,9 @@ def validate_train_args(args: TrainArgs, output_size: int):
     if args.model is not None:
         logger.info(f"Setting model output size to {args.model.vocab_size}")
         args.model.vocab_size = output_size
+        assert (
+            args.model.max_encoder_seq_length == args.data.max_encoder_seq_length
+        ), "max_encoder_seq_length for model and data should match"
 
     if args.entropy_model is not None:
         logger.info(f"Setting model output size to {args.entropy_model.vocab_size}")
@@ -306,7 +317,7 @@ def train(args: TrainArgs):
         model = parallelize_model(
             model,
             world_mesh,
-            args.model,
+            model_args,
             args.distributed,
             fsdp_grouping_plan=build_fsdp_grouping_plan(model_args),
             tp_parallelize=tp_parallelize,
@@ -600,20 +611,20 @@ def train(args: TrainArgs):
                 # step: Metric at a step
                 # interval: Metric averaged/summed across all steps since the last log interval.
                 #     Typically, this is 10
-                step_loss_per_gpu = loss.item()
-                step_loss_across_gpus = dist_mean(step_loss_per_gpu).item()
-                interval_loss_per_gpu = np.mean(step_losses).item()
-                interval_loss_across_gpus = dist_mean(interval_loss_per_gpu).item()
+                step_loss_per_gpu = loss
+                step_loss_across_gpus = dist_mean(step_loss_per_gpu)
+                interval_loss_per_gpu = np.mean(step_losses)
+                interval_loss_across_gpus = dist_mean(interval_loss_per_gpu)
 
                 stacked_tok_loss = torch.cat(step_tok_losses, dim=0)
-                interval_total_tok_loss_per_gpu = stacked_tok_loss.sum().item()
+                interval_total_tok_loss_per_gpu = stacked_tok_loss.sum()
                 interval_total_tok_loss_across_gpus = dist_sum(
                     interval_total_tok_loss_per_gpu, reduce_dtype=torch.bfloat16
-                ).item()
+                )
                 interval_total_n_bytes_per_gpu = n_bytes
                 interval_total_n_bytes_across_gpus = dist_sum(
                     n_bytes, reduce_dtype=torch.bfloat16
-                ).item()
+                )
 
                 interval_bpb_per_gpu = (
                     interval_total_tok_loss_per_gpu
@@ -642,18 +653,20 @@ def train(args: TrainArgs):
                     },
                     "memory": gpu_mem_stats._asdict(),
                     "loss": {
-                        "step_per_gpu": step_loss_per_gpu,
-                        "step_across_gpu": step_loss_across_gpus,
-                        "interval_per_gpu": interval_loss_per_gpu,
-                        "interval_across_gpu": interval_loss_across_gpus,
+                        "step_per_gpu": to_py_num(step_loss_per_gpu),
+                        "step_across_gpu": to_py_num(step_loss_across_gpus),
+                        "interval_per_gpu": to_py_num(interval_loss_per_gpu),
+                        "interval_across_gpu": to_py_num(interval_loss_across_gpus),
                     },
                     "bpb": {
-                        "interval_per_gpu": interval_bpb_per_gpu,
-                        "interval_across_gpus": interval_bpb_across_gpus,
+                        "interval_per_gpu": to_py_num(interval_bpb_per_gpu),
+                        "interval_across_gpus": to_py_num(interval_bpb_across_gpus),
                     },
                     "n_bytes": {
-                        "interval_per_gpu": interval_total_n_bytes_per_gpu,
-                        "interval_across_gpus": interval_total_n_bytes_across_gpus,
+                        "interval_per_gpu": to_py_num(interval_total_n_bytes_per_gpu),
+                        "interval_across_gpus": to_py_num(
+                            interval_total_n_bytes_across_gpus
+                        ),
                     },
                 }
 
@@ -673,8 +686,8 @@ def train(args: TrainArgs):
                 logger.info(
                     f"step: {train_state.step}"
                     f"  acc: {train_state.acc_step}"
-                    f"  loss_gpu: {round(interval_loss_per_gpu, 4):>7}"
-                    f"  loss_avg: {round(interval_loss_across_gpus, 4):>7}"
+                    f"  loss_gpu: {round(to_py_num(interval_loss_per_gpu), 4):>7}"
+                    f"  loss_avg: {round(to_py_num(interval_loss_across_gpus), 4):>7}"
                     f"  bpb_gpu: {interval_bpb_per_gpu:3f}"
                     f"  bpb_avg: {interval_bpb_across_gpus:3f}"
                     f"  grad: {grad_norm:.2e}"
@@ -699,6 +712,9 @@ def train(args: TrainArgs):
             if every_n_steps(
                 train_state, args.checkpoint.dump.every, acc_step=0
             ) or every_n_steps(train_state, args.checkpoint.eval.every, acc_step=0):
+                train_state.data_loader_state, data_loader, batch_iterator = (
+                    get_state_and_refresh(data_loader)
+                )
                 saved = checkpoint.save(
                     model,
                     optimizer,
@@ -740,6 +756,9 @@ def train(args: TrainArgs):
 
             if preemption_flag["flag"]:
                 if not saved:
+                    train_state.data_loader_state, data_loader, batch_iterator = (
+                        get_state_and_refresh(data_loader)
+                    )
                     checkpoint.save(
                         model,
                         optimizer,
@@ -751,6 +770,9 @@ def train(args: TrainArgs):
                 sys.exit(0)
 
     if not saved:
+        train_state.data_loader_state, data_loader, batch_iterator = (
+            get_state_and_refresh(data_loader)
+        )
         checkpoint.save(
             model,
             optimizer,
@@ -803,7 +825,7 @@ def main():
 
     Plus all the default values in TrainArgs dataclass.
     """
-    train_args = parse_args(TrainArgs)
+    train_args = parse_args_to_pydantic_model(TrainArgs)
     if train_args.debug_dynamo:
         import torch._dynamo
 

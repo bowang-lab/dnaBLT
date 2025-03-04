@@ -2,4 +2,5 @@
 profile = "black"
 known_bytelatent = "bytelatent"
 known_apps = "apps"
+known_third_party = "wandb"
 sections = "FUTURE,STDLIB,THIRDPARTY,BYTELATENT,APPS,FIRSTPARTY,LOCALFOLDER"

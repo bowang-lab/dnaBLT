@@ -1,13 +1,10 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-import json
 import logging
 import os
 from typing import Any
 
-import fsspec
 import numpy as np
 import yaml
-from omegaconf import OmegaConf
 from pydantic import BaseModel, ConfigDict
 
 from bytelatent.checkpoint import CheckpointArgs
@@ -17,14 +14,18 @@ from bytelatent.data.iterators.abstract_iterator import StatefulIterator
 from bytelatent.data.iterators.arrow_iterator import ArrowFileIterator
 from bytelatent.data.iterators.looping_iterator import LoopingIterator
 from bytelatent.data.iterators.multiprocess_iterator import MultiprocessIterator
-from bytelatent.data.iterators.packing_iterator import PackingArgs, PackingIterator
+from bytelatent.data.iterators.packing_iterator import (
+    PackingArgs,
+    PackingIterator,
+    PackingMode,
+)
 from bytelatent.data.iterators.preprocess_iterator import PreprocessIterator
 from bytelatent.data.iterators.sampling_iterator import SamplingIterator
 from bytelatent.data.iterators.sequence_iterator import (
     SequenceIterator,
     SequencePackingArgs,
 )
-from bytelatent.data.patcher import PatcherArgs
+from bytelatent.data.patcher import PatcherArgs, PatchingModeEnum
 from bytelatent.distributed import DistributedArgs, EnvironmentArgs
 from bytelatent.metrics import LoggingArgs
 from bytelatent.model.blt import ByteLatentTransformerArgs
@@ -38,19 +39,6 @@ logger = logging.getLogger()
 
 def get_rng_state(seed: int, rank: int, world_size: int) -> dict[str, Any]:
     return np.random.default_rng((seed, rank, world_size)).bit_generator.state
-
-
-def parse_args(args_cls):
-    cli_args = OmegaConf.from_cli()
-    file_cfg = OmegaConf.load(cli_args.config)
-    # We remove 'config' attribute from config as the underlying DataClass does not have it
-    del cli_args.config
-
-    default_cfg = OmegaConf.create(args_cls().model_dump())
-    cfg = OmegaConf.merge(default_cfg, file_cfg, cli_args)
-    cfg = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
-    pydantic_args = args_cls.model_validate(cfg)
-    return pydantic_args
 
 
 TRAIN_DATA_FILE_PATTERN = "*.chunk.*.jsonl"
@@ -88,6 +76,7 @@ def distribute_data_to_rank(
     arrow_batch_size: int,
     rank: int,
     world_size: int,
+    file_format: str,
     s3_profile: str | None = None,
     file_pattern: str = TRAIN_DATA_FILE_PATTERN,
 ) -> ArrowFileIterator:
@@ -101,6 +90,7 @@ def distribute_data_to_rank(
             rank_to_arrow_iterator_params.append(
                 ArrowFileIterator(
                     file_path=chunk_path,
+                    file_format=file_format,
                     worker_id=worker_id,
                     num_workers=n_workers_per_chunk,
                     preprocess_dir=preprocess_dir,
@@ -146,6 +136,7 @@ class DataloaderArgs(BaseModel):
     entropy_model_name: str | None = "transformer_100m"
     arrow_batch_size: int = 100
     buffer_size: int = 64
+    file_format: str = "arrow"
 
     pad_to_max_length: bool = True
     max_encoder_seq_length: int = 12288
@@ -167,6 +158,7 @@ class DataloaderArgs(BaseModel):
         for dataset_path in self.sources:
             shuffle_rng_state = get_rng_state(self.seed + 1, rank, world_size)
             arrow_iterator = distribute_data_to_rank(
+                file_format=self.file_format,
                 dataset_path=os.path.join(self.root_dir, dataset_path),
                 preprocess_dir=self.preprocess_dir,
                 entropy_model_name=self.entropy_model_name,
@@ -214,7 +206,11 @@ class DataloaderArgs(BaseModel):
             max_length=self.max_encoder_seq_length,
             pad_to_max_length=self.pad_to_max_length,
             enable_byte_ngrams=self.enable_byte_ngrams,
-            tokenizer_name=self.tokenizer_args.name,
+            packing_mode=(
+                PackingMode.BYTES
+                if self.patcher_args.patching_mode == PatchingModeEnum.byte
+                else PackingMode.PATCHING
+            ),
         )
         packing_iterator = PackingIterator(sampling_iterator, packing_args=packing_args)
         if self.load_async:
@@ -254,7 +250,7 @@ class LMHarnessArgs(BaseModel):
 
 class ValidationArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    max_steps: int | None = (
+    max_n_docs: int | None = (
         None  # If None the whole validation file is used -> /!\ This number of steps is gpu dependent (100 max steps on 8 gpus = 800 steps on 1 gpu)
     )
     use_val_from_train_src: bool = True  # Use the validation set from training sources
@@ -264,8 +260,8 @@ class ValidationArgs(BaseModel):
 
 class EvalArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    dump_dir: str
-    ckpt_dir: str
+    dump_dir: str | None = None
+    ckpt_dir: str | None = None
     metric_log_dir: str | None = None
     generator: PackedCausalTransformerGeneratorArgs = (
         PackedCausalTransformerGeneratorArgs()

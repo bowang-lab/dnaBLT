@@ -12,6 +12,7 @@ from typing_extensions import Self
 from bytelatent.base_transformer import (
     BaseTransformerArgs,
     InitStdFactor,
+    SequenceModelWithOutput,
     TransformerBlock,
 )
 from bytelatent.data.patcher import Patcher, PatcherArgs
@@ -796,7 +797,7 @@ def compute_hash_embeddings(
     return local_encoder_embeds
 
 
-class ByteLatentTransformer(nn.Module):
+class ByteLatentTransformer(nn.Module, SequenceModelWithOutput):
     """
     The ByteLatentTransformer (BLT) is a byte-level language model architecture that processes byte sequences
     by dynamically segmenting them into patches. It uses a combination of local encoders, global transformers,
@@ -891,6 +892,9 @@ class ByteLatentTransformer(nn.Module):
                     max_patch_length=args.max_patch_length,
                 )
             )
+
+    def get_output_seq_len(self):
+        return self.max_seqlen
 
     def forward(
         self,

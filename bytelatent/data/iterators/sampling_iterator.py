@@ -2,13 +2,16 @@
 from typing import Any
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict
+from pydantic import ConfigDict
 
-from bytelatent.data.iterators.abstract_iterator import StatefulIterator
+from bytelatent.data.iterators.abstract_iterator import (
+    PydanticIteratorState,
+    StatefulIterator,
+)
 from bytelatent.data.iterators.sequence_iterator import SequenceIteratorState
 
 
-class SamplingIteratorState(BaseModel):
+class SamplingIteratorState(PydanticIteratorState):
     model_config = ConfigDict(extra="forbid")
     rng_state: dict[str, Any]
     source_to_weight: dict[str, float]

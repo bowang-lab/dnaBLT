@@ -5,20 +5,29 @@ import torch
 from pydantic import BaseModel, ConfigDict
 
 from bytelatent.data.data_types import BltExample
-from bytelatent.data.iterators.abstract_iterator import IteratorState, StatefulIterator
+from bytelatent.data.iterators.abstract_iterator import (
+    PydanticIteratorState,
+    StatefulIterator,
+)
 from bytelatent.data.iterators.arrow_iterator import (
     ArrowFileIterator,
     ArrowFileIteratorState,
 )
-from bytelatent.data.iterators.looping_iterator import LoopingIteratorState
+from bytelatent.data.iterators.limit_iterator import LimitIterator, LimitIteratorState
+from bytelatent.data.iterators.looping_iterator import (
+    LoopingIterator,
+    LoopingIteratorState,
+)
 from bytelatent.data.patcher import Patcher, PatcherArgs, PatchingModeEnum
 from bytelatent.blt_tokenizers.blt_tokenizer import BltTokenizer
 from bytelatent.blt_tokenizers.build_tokenizer import TokenizerArgs
 
 
-class PreprocessIteratorState(BaseModel, IteratorState):
+class PreprocessIteratorState(PydanticIteratorState):
     model_config = ConfigDict(extra="forbid")
-    arrow_file_iterator_state: ArrowFileIteratorState | LoopingIteratorState
+    arrow_file_iterator_state: (
+        ArrowFileIteratorState | LoopingIteratorState | LimitIteratorState
+    )
     add_tokens: bool
     add_patches: bool
     tokenizer_args: TokenizerArgs
@@ -43,7 +52,7 @@ class PreprocessIterator(StatefulIterator):
 
     def __init__(
         self,
-        arrow_iterator: ArrowFileIterator,
+        arrow_iterator: ArrowFileIterator | LoopingIterator | LimitIterator,
         *,
         patcher_args: PatcherArgs,
         tokenizer_args: TokenizerArgs,

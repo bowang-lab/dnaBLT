@@ -15,13 +15,16 @@ from pydantic import BaseModel, ConfigDict
 from bytelatent import ByteLatentError
 from bytelatent.data.data_types import BltExample
 from bytelatent.data.file_util import get_fs
-from bytelatent.data.iterators.abstract_iterator import IteratorState, StatefulIterator
+from bytelatent.data.iterators.abstract_iterator import (
+    PydanticIteratorState,
+    StatefulIterator,
+)
 from bytelatent.preprocess.preprocess_entropies import get_id_key, get_text
 
 logger = getLogger(__name__)
 
 
-class ArrowFileIteratorState(BaseModel, IteratorState):
+class ArrowFileIteratorState(PydanticIteratorState):
     model_config = ConfigDict(extra="forbid")
     file_path: str | None
     row_num: int
@@ -58,6 +61,13 @@ def shard_sort_key(file: str):
     match = re.search(r".+\.shard_([0-9]+)\.arrow", file)
     shard_number = int(match.group(1))
     return shard_number
+
+
+def maybe_truncate_string(text: str, max_length: int):
+    if len(text) <= max_length:
+        return text
+    else:
+        return text[:max_length] + "..."
 
 
 class ArrowFileIterator(StatefulIterator):
@@ -103,39 +113,51 @@ class ArrowFileIterator(StatefulIterator):
             logger.info("Arrow iterator using fs=%s", self.fs)
 
         if dataset_files is None:
-            # Prepare arrow shards
-            jsonl_file = file_path
-            parts = re.match(
-                r"(.+)\.chunk\.[0-9]+\.jsonl", os.path.basename(jsonl_file)
-            )
-            assert parts is not None
-            dataset = parts.group(1)
-            data_dir = os.path.join(preprocess_dir, dataset, entropy_model_name)
-            data_dir_with_glob = os.path.join(
-                data_dir, f"{os.path.basename(jsonl_file)}.shard_*.arrow"
-            )
-            if self.fs is None:
-                self.fs = get_fs(data_dir_with_glob, s3_profile=s3_profile)
-                if isinstance(self.fs, s3fs.S3FileSystem):
-                    self.filesystem_type = "s3"
-                else:
-                    self.filesystem_type = "file"
-            shard_files = self.fs.glob(data_dir_with_glob)
-
-            for s in shard_files:
-                complete_file = os.path.join(
-                    data_dir, f"{os.path.basename(s)}.complete"
+            assert (
+                file_path is not None
+            ), "Must specify file_Path if dataset_files is None"
+            if file_format == "json":
+                if self.fs is None:
+                    self.fs = get_fs(file_path, s3_profile=s3_profile)
+                    if isinstance(self.fs, s3fs.S3FileSystem):
+                        self.filesystem_type = "s3"
+                    else:
+                        self.filesystem_type = "file"
+                self.dataset_files = [file_path]
+            else:
+                # Prepare arrow shards
+                jsonl_file = file_path
+                parts = re.match(
+                    r"(.+)\.chunk\.[0-9]+\.jsonl", os.path.basename(jsonl_file)
                 )
-
-                if not self.fs.exists(complete_file):
-                    raise ValueError(f"Missing .complete for input file: {s}")
-
-            shard_files = sorted(shard_files, key=shard_sort_key)
-            if len(shard_files) == 0:
-                raise ByteLatentError(
-                    f"Zero shard_files found corresponding to: {file_path} using preprocess_dir={preprocess_dir} and entropy_model_name={entropy_model_name}, so the search path is data_dir={data_dir} for matches to {jsonl_file.name}.shard_*.arrow"
+                assert parts is not None
+                dataset = parts.group(1)
+                data_dir = os.path.join(preprocess_dir, dataset, entropy_model_name)
+                data_dir_with_glob = os.path.join(
+                    data_dir, f"{os.path.basename(jsonl_file)}.shard_*.arrow"
                 )
-            self.dataset_files = [f for f in shard_files]
+                if self.fs is None:
+                    self.fs = get_fs(data_dir_with_glob, s3_profile=s3_profile)
+                    if isinstance(self.fs, s3fs.S3FileSystem):
+                        self.filesystem_type = "s3"
+                    else:
+                        self.filesystem_type = "file"
+                shard_files = self.fs.glob(data_dir_with_glob)
+
+                for s in shard_files:
+                    complete_file = os.path.join(
+                        data_dir, f"{os.path.basename(s)}.complete"
+                    )
+
+                    if not self.fs.exists(complete_file):
+                        raise ValueError(f"Missing .complete for input file: {s}")
+
+                shard_files = sorted(shard_files, key=shard_sort_key)
+                if len(shard_files) == 0:
+                    raise ByteLatentError(
+                        f"Zero shard_files found corresponding to: {file_path} using preprocess_dir={preprocess_dir} and entropy_model_name={entropy_model_name}, so the search path is data_dir={data_dir} for matches to {jsonl_file.name}.shard_*.arrow"
+                    )
+                self.dataset_files = [f for f in shard_files]
         else:
             self.preprocess_dir = None
             self.dataset_files = dataset_files
@@ -235,9 +257,8 @@ class ArrowFileIterator(StatefulIterator):
                     yield out
 
     def _set_row_num(self, target_row_num: int):
-        logger.info(
-            f"Setting arrow position to {target_row_num} for {self.dataset_files}"
-        )
+        data_str = maybe_truncate_string(str(self.dataset_files), 200)
+        logger.info(f"Setting arrow position to {target_row_num} for {data_str}")
         if target_row_num is None or target_row_num == 0:
             self.row_num = 0
             self.dataset = None
@@ -285,6 +306,7 @@ class ArrowFileIterator(StatefulIterator):
                 else:
                     curr_remaining -= len(batch)
             self.row_num = target_row_num
+        data_str = maybe_truncate_string(str(self.dataset_files), 200)
         logger.info(
-            f"Finished setting arrow position to {target_row_num} for {self.dataset_files}"
+            f"Finished setting arrow position to {target_row_num} for {data_str}"
         )
