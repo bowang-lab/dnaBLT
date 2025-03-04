@@ -4,9 +4,9 @@
 #SBATCH --job-name=entropy_model
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
-#SBATCH -t 1-00:0:0
+#SBATCH -t 1:00:00
 #SBATCH -p gpu_bwanggroup
-#SBATCH --mem=200G
+#SBATCH --mem=100G
 #SBATCH --reservation=h100
 
 # Source conda
