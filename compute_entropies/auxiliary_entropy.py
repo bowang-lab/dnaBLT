@@ -7,14 +7,78 @@ import pyarrow as pa
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import DataLoader, DistributedSampler, Sampler
 from torch.nn.utils.rnn import pad_sequence
-
+import math
 from rich.progress import Progress, TextColumn
 from datasets import config, load_dataset
 from evo2 import Evo2
 
 MAX_LENGTH = 8192
+
+
+# -------------------------------------------------------------------------
+# Custom distributed sampler
+# -------------------------------------------------------------------------
+class LengthAwareDistributedSampler(Sampler):
+    def __init__(
+        self,
+        dataset,
+        batch_size,
+        num_replicas=None,
+        rank=None,
+        shuffle=False,
+        lengths=None,
+    ):
+        if num_replicas is None:
+            if not dist.is_available():
+                raise RuntimeError("Requires distributed package to be available")
+            num_replicas = dist.get_world_size()
+        if rank is None:
+            if not dist.is_available():
+                raise RuntimeError("Requires distributed package to be available")
+            rank = dist.get_rank()
+
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.num_replicas = num_replicas
+        self.rank = rank
+        self.shuffle = shuffle
+
+        if lengths is None:
+            self.lengths = [sample["length"] for sample in dataset]
+        else:
+            self.lengths = lengths
+
+        self.dataset_size = len(self.dataset)
+
+        def __iter__(self):
+            indices = list(range(self.dataset_size))
+            indices.sort(key=lambda idx: self.lengths[idx])
+
+            batches = [
+                indices[i : i + self.batch_size]
+                for i in range(0, len(indices), self.batch_size)
+            ]
+
+            if self.shuffle:
+                np.random.shuffle(batches)
+
+            total_batches = (
+                int(math.ceil(len(batches) / self.num_replicas)) * self.num_replicas
+            )
+            if len(batches) < total_batches:
+                batches += batches[: (total_batches - len(batches))]
+
+            batches_for_rank = batches[self.rank : total_batches : self.num_replicas]
+
+            indices_for_rank = [idx for batch in batches_for_rank for idx in batch]
+            return iter(indices_for_rank)
+
+        def __len__(self):
+            total_batches = int(math.ceil(len(self.dataset) / self.batch_size))
+            batches_per_replica = int(math.ceil(total_batches / self.num_replicas))
+            return batches_per_replica * self.batch_size
 
 
 # -------------------------------------------------------------------------
@@ -101,6 +165,11 @@ def calculate_entropies(tokens: torch.tensor, model: torch.nn.Module, device):
     return concat_entropies
 
 
+def add_length(example):
+    example["length"] = len(example["text"])
+    return example
+
+
 # test_files = {
 #     'test': [
 #         'hf://datasets/LongSafari/open-genome@84369c058d192dcb607086d71679b877421e3250/stage1/gtdb/gtdb_test.parquet',
@@ -137,25 +206,23 @@ def init_distributed_training(
 
     # Message indicating the process has passed the barrier
     print(f"Process {rank} passed barrier")
-    # data = datasets.load_dataset(f"{data_path}/stage1", split=split).with_format('torch')
-    # test_files = {
-    #     "test": [
-    #         "/cluster/home/t136085uhn/.cache/huggingface/hub/datasets--LongSafari--open-genome/snapshots/84369c058d192dcb607086d71679b877421e3250/stage1/gtdb/gtdb_test.parquet",
-    #         "/cluster/home/t136085uhn/.cache/huggingface/hub/datasets--LongSafari--open-genome/snapshots/84369c058d192dcb607086d71679b877421e3250/stage1/imgpr/imgpr_test.parquet",
-    #     ]
-    # }
-    # data = datasets.load_dataset(
-    #     "parquet", data_files=test_files, split="test"
-    # ).with_format("torch")
     data = load_dataset(f"{data_path}/stage1", split=split).with_format("torch")
+
+    if rank > 0:
+        dist.barrier()
+
+    data = data.map(add_length)
+
+    if rank == 0:
+        dist.barrier()
 
     # Standard PyTorch DistributedSampler (removes your custom length-sorting).
     # If you need length-based sorting globally, you need a custom distributed sampler.
-    dist_sampler = DistributedSampler(
+    dist_sampler = LengthAwareDistributedSampler(
         data,
+        batch_size,
         num_replicas=world_size,
         rank=rank,
-        shuffle=True,  # or False, up to you
     )
 
     dataloader = DataLoader(
