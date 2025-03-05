@@ -52,33 +52,46 @@ class LengthAwareDistributedSampler(Sampler):
 
         self.dataset_size = len(self.dataset)
 
-        def __iter__(self):
-            indices = list(range(self.dataset_size))
-            indices.sort(key=lambda idx: self.lengths[idx])
+    def __iter__(self):
+        # 1. Sort indices by sequence length.
+        indices = list(range(self.dataset_size))
+        indices.sort(key=lambda idx: self.lengths[idx])
 
-            batches = [
-                indices[i : i + self.batch_size]
-                for i in range(0, len(indices), self.batch_size)
-            ]
+        # 2. Group indices into batches.
+        batches = [
+            indices[i : i + self.batch_size]
+            for i in range(0, len(indices), self.batch_size)
+        ]
+        if self.shuffle:
+            np.random.shuffle(batches)
 
-            if self.shuffle:
-                np.random.shuffle(batches)
+        # 3. Calculate distribution:
+        total_batches = len(batches)
+        base_batches = total_batches // self.num_replicas
+        remainder = total_batches % self.num_replicas
 
-            total_batches = (
-                int(math.ceil(len(batches) / self.num_replicas)) * self.num_replicas
-            )
-            if len(batches) < total_batches:
-                batches += batches[: (total_batches - len(batches))]
+        # Allocate extra batches (if any) to rank 0.
+        if self.rank == 0:
+            # Rank 0 gets the extra remainder batches.
+            batches_for_rank = batches[: base_batches + remainder]
+        else:
+            # Other ranks get a contiguous block after rank 0's allocation.
+            start = base_batches + remainder + (self.rank - 1) * base_batches
+            end = start + base_batches
+            batches_for_rank = batches[start:end]
 
-            batches_for_rank = batches[self.rank : total_batches : self.num_replicas]
+        # 4. Flatten batches into a single list of indices.
+        indices_for_rank = [idx for batch in batches_for_rank for idx in batch]
+        yield from indices_for_rank
 
-            indices_for_rank = [idx for batch in batches_for_rank for idx in batch]
-            return iter(indices_for_rank)
-
-        def __len__(self):
-            total_batches = int(math.ceil(len(self.dataset) / self.batch_size))
-            batches_per_replica = int(math.ceil(total_batches / self.num_replicas))
-            return batches_per_replica * self.batch_size
+    def __len__(self):
+        total_batches = math.ceil(self.dataset_size / self.batch_size)
+        base_batches = total_batches // self.num_replicas
+        remainder = total_batches % self.num_replicas
+        if self.rank == 0:
+            return (base_batches + remainder) * self.batch_size
+        else:
+            return base_batches * self.batch_size
 
 
 # -------------------------------------------------------------------------
@@ -227,10 +240,10 @@ def init_distributed_training(
 
     dataloader = DataLoader(
         data,
-        sampler=dist_sampler,  # ensures each rank sees a unique subset
         batch_size=batch_size,
+        shuffle=False,
+        sampler=dist_sampler,  # ensures each rank sees a unique subset
         collate_fn=collate,
-        drop_last=False,
     )
 
     # ---------------------------------------------------------------------
