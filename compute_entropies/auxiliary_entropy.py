@@ -20,7 +20,7 @@ MAX_LENGTH = 8192
 # -------------------------------------------------------------------------
 # Custom distributed sampler
 # -------------------------------------------------------------------------
-class LengthAwareDistributedSampler(Sampler):
+class LengthAwareDistributedBatchSampler(Sampler):
     def __init__(
         self,
         dataset,
@@ -30,6 +30,7 @@ class LengthAwareDistributedSampler(Sampler):
         shuffle=False,
         lengths=None,
     ):
+        # Initialize num_replicas, rank, and compute lengths as before...
         if num_replicas is None:
             if not dist.is_available():
                 raise RuntimeError("Requires distributed package to be available")
@@ -49,7 +50,6 @@ class LengthAwareDistributedSampler(Sampler):
             self.lengths = [sample["length"] for sample in dataset]
         else:
             self.lengths = lengths
-
         self.dataset_size = len(self.dataset)
 
     def __iter__(self):
@@ -65,33 +65,27 @@ class LengthAwareDistributedSampler(Sampler):
         if self.shuffle:
             np.random.shuffle(batches)
 
-        # 3. Calculate distribution:
         total_batches = len(batches)
         base_batches = total_batches // self.num_replicas
-        remainder = total_batches % self.num_replicas
+        even_count = base_batches * self.num_replicas
 
-        # Allocate extra batches (if any) to rank 0.
+        # 3. Assign batches evenly (via round-robin) for the evenly-divisible part.
+        batches_for_rank = [batches[i] for i in range(even_count) if (i % self.num_replicas == self.rank)]
+        # 4. Allocate remaining extra batches solely to rank 0.
         if self.rank == 0:
-            # Rank 0 gets the extra remainder batches.
-            batches_for_rank = batches[: base_batches + remainder]
-        else:
-            # Other ranks get a contiguous block after rank 0's allocation.
-            start = base_batches + remainder + (self.rank - 1) * base_batches
-            end = start + base_batches
-            batches_for_rank = batches[start:end]
-
-        # 4. Flatten batches into a single list of indices.
-        indices_for_rank = [idx for batch in batches_for_rank for idx in batch]
-        yield from indices_for_rank
+            batches_for_rank.extend(batches[even_count:])
+            
+        yield from batches_for_rank
 
     def __len__(self):
-        total_batches = math.ceil(self.dataset_size / self.batch_size)
+        total_batches = (self.dataset_size + self.batch_size - 1) // self.batch_size
         base_batches = total_batches // self.num_replicas
         remainder = total_batches % self.num_replicas
         if self.rank == 0:
-            return (base_batches + remainder) * self.batch_size
+            return base_batches + remainder
         else:
-            return base_batches * self.batch_size
+            return base_batches
+
 
 
 # -------------------------------------------------------------------------
@@ -231,7 +225,7 @@ def init_distributed_training(
 
     # Standard PyTorch DistributedSampler (removes your custom length-sorting).
     # If you need length-based sorting globally, you need a custom distributed sampler.
-    dist_sampler = LengthAwareDistributedSampler(
+    dist_sampler = LengthAwareDistributedBatchSampler(
         data,
         batch_size,
         num_replicas=world_size,
@@ -240,9 +234,7 @@ def init_distributed_training(
 
     dataloader = DataLoader(
         data,
-        batch_size=batch_size,
-        shuffle=False,
-        sampler=dist_sampler,  # ensures each rank sees a unique subset
+        batch_sampler=dist_sampler,  # ensures each rank sees a unique subset
         collate_fn=collate,
     )
 
