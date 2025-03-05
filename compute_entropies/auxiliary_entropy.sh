@@ -58,5 +58,5 @@ stdbuf -oL -eL srun --exclusive python3 compute_entropies/auxiliary_entropy.py \
     --data_path $data_path \
     --data_cache_dir $data_path/cache \
     --split validation \
-    --batch_size 4 \
-    --arrow_batch 10 \
+    --batch_size 16 \
+    --arrow_batch 32 \
