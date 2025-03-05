@@ -204,25 +204,23 @@ def init_distributed_training(
                     )
 
                     # Each rank processes only its portion of data
-                    start_time = time.time()
-                    tot_bsz_ = 0
                     for tokens, sample_ids, texts in dataloader:
                         tokens = tokens.to(
                             dtype=torch.int, device=rank
                         )  # push tokens to GPU
 
                         # Calculate entropies
+                        start_time = time.time()
                         scores = calculate_entropies(tokens, entropy_model, device=rank)
+                        end_time = time.time()
                         scores = scores.cpu().contiguous().view(torch.float16).numpy()
-
                         bsz_ = len(scores)
-                        tot_bsz_ += bsz_
 
                         print(
-                            f"Processed {tot_bsz_} batches in {time.time() - start_time} seconds"
+                            f"Processed {bsz_} batches in {end_time - start_time} seconds"
                         )
 
-                        for i in range(bsz_):
+                        for i in range(bsz_):  # should all have shape bsz
                             entropies_buffer.append(scores[i])  # shape [seq_len]
                             id_buffer.append(sample_ids[i])  # a single sample_id
                             text_buffer.append(texts[i])
