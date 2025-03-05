@@ -260,8 +260,34 @@ def init_distributed_training(
     # ---------------------------------------------------------------------
     # 5. Compute entropies and write out
     # ---------------------------------------------------------------------
+    # Check if we need to resume from an existing file
+    resume_mode = False
+    last_sample_ids = []
+    
+    # If the output file exists, we might need to resume
+    if resume_mode and output_fs.exists(rank_output_file):
+        try:
+            # Read the existing Arrow file to get the last batch
+            with output_fs.open(rank_output_file, "rb") as source:
+                reader = pa.ipc.open_file(source)
+                # Get the last batch if any batches exist
+                num_processed_batches = reader.num_record_batches
+                if num_processed_batches > 0:
+                    last_batch = reader.get_batch(num_processed_batches - 1)
+                    last_batch_dict = last_batch.to_pydict()
+                    last_sample_ids = last_batch_dict["sample_id"]
+                    resume_mode = True
+                    print(f"Rank {rank}: Found existing file with {num_processed_batches} batches.")
+                    print(f"Rank {rank}: Last batch has {len(last_sample_ids)} samples.")
+        except Exception as e:
+            print(f"Rank {rank}: Error reading existing file: {e}")
+            print(f"Rank {rank}: Starting from beginning")
+            resume_mode = False
+    
     try:
-        with output_fs.open(rank_output_file, "wb") as sink:
+        # Determine write mode - append if resuming, otherwise start fresh
+        write_mode = "ab" if resume_mode else "wb"
+        with output_fs.open(rank_output_file, write_mode) as sink:
             with pa.ipc.new_file(sink, schema) as writer:
                 id_buffer = []
                 entropies_buffer = []
@@ -274,9 +300,37 @@ def init_distributed_training(
                     task = progress.add_task(
                         f"[green]Rank {rank} calculating entropies...", total=None
                     )
+                    
+                    # Process data, skipping already processed samples if resuming
+                    processed_batches = 0
 
-                    # Each rank processes only its portion of data
                     for tokens, sample_ids, texts in dataloader:
+                        # If we're resuming and haven't found our position yet
+                        if resume_mode:
+                            # Check if this batch contains any of the last sample IDs
+                            if any(sid in last_sample_ids for sid in sample_ids):
+                                print(f"Rank {rank}: Found batch containing last processed samples")
+                                # Check if this batch exactly matches or contains all the last saved sample IDs
+                                if set(sample_ids) == set(last_sample_ids) or all(sid in last_sample_ids for sid in sample_ids):
+                                    print(f"Rank {rank}: Found last processed batch, will resume from next batch")
+                                    processed_batches += 1
+                                    # Mark that we've found our resume point 
+                                    # so the next batch will be processed
+                                    resume_mode = False
+                                    continue
+                                else:
+                                    # This is a partially processed batch - only keep unprocessed samples
+                                    indices_to_process = [i for i, sid in enumerate(sample_ids) if sid not in last_sample_ids]
+                                    tokens = tokens[indices_to_process]
+                                    texts = [texts[i] for i in indices_to_process]
+                                    sample_ids = [sample_ids[i] for i in indices_to_process]
+                                    resume_mode = False
+                                    print(f"Rank {rank}: Resuming with {len(indices_to_process)} new samples in partially processed batch")
+                            else:
+                                # Skip this batch as it was already processed
+                                processed_batches += 1
+                                continue
+
                         tokens = tokens.to(
                             dtype=torch.int, device=rank
                         )  # push tokens to GPU
@@ -331,9 +385,11 @@ def init_distributed_training(
         output_fs.touch(f"{rank_output_file}.complete")
 
     except Exception as e:
-        # Clean up partial file if something goes wrong
-        if output_fs.exists(rank_output_file):
-            output_fs.rm(rank_output_file)
+        # Just log the error - the partial Arrow file is already saved and can be used for resuming
+        print(f"Rank {rank}: Error during processing: {e}")
+        print(f"Rank {rank}: Partial results saved in {rank_output_file}")
+        
+        # Re-raise the original error
         raise e
 
     finally:
