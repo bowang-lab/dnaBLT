@@ -70,11 +70,15 @@ class LengthAwareDistributedBatchSampler(Sampler):
         even_count = base_batches * self.num_replicas
 
         # 3. Assign batches evenly (via round-robin) for the evenly-divisible part.
-        batches_for_rank = [batches[i] for i in range(even_count) if (i % self.num_replicas == self.rank)]
+        batches_for_rank = [
+            batches[i]
+            for i in range(even_count)
+            if (i % self.num_replicas == self.rank)
+        ]
         # 4. Allocate remaining extra batches solely to rank 0.
         if self.rank == 0:
             batches_for_rank.extend(batches[even_count:])
-            
+
         yield from batches_for_rank
 
     def __len__(self):
@@ -87,7 +91,6 @@ class LengthAwareDistributedBatchSampler(Sampler):
             return base_batches
 
 
-
 # -------------------------------------------------------------------------
 # Collate function (unchanged)
 # -------------------------------------------------------------------------
@@ -95,20 +98,13 @@ def collate(sequences: list):
     # Pad to max length in the batch
     text = [s["text"] for s in sequences]
     record = [s["record"] for s in sequences]
-    bos_token = torch.tensor(
-        [0], dtype=torch.uint8
-    )  # Beginning of sequence token in EVO
+
 
     return (
         pad_sequence(
             [
-                torch.cat(
-                    (
-                        bos_token,
-                        torch.from_numpy(
-                            np.frombuffer(bytearray(s.encode("utf-8")), dtype=np.uint8)
-                        ),
-                    )
+                torch.from_numpy(
+                    np.frombuffer(bytearray(s.encode("utf-8")), dtype=np.uint8)
                 )
                 for s in text
             ],
@@ -263,7 +259,7 @@ def init_distributed_training(
     # Check if we need to resume from an existing file
     resume_mode = False
     last_sample_ids = []
-    
+
     # If the output file exists, we might need to resume
     if resume_mode and output_fs.exists(rank_output_file):
         try:
@@ -277,13 +273,17 @@ def init_distributed_training(
                     last_batch_dict = last_batch.to_pydict()
                     last_sample_ids = last_batch_dict["sample_id"]
                     resume_mode = True
-                    print(f"Rank {rank}: Found existing file with {num_processed_batches} batches.")
-                    print(f"Rank {rank}: Last batch has {len(last_sample_ids)} samples.")
+                    print(
+                        f"Rank {rank}: Found existing file with {num_processed_batches} batches."
+                    )
+                    print(
+                        f"Rank {rank}: Last batch has {len(last_sample_ids)} samples."
+                    )
         except Exception as e:
             print(f"Rank {rank}: Error reading existing file: {e}")
             print(f"Rank {rank}: Starting from beginning")
             resume_mode = False
-    
+
     try:
         # Determine write mode - append if resuming, otherwise start fresh
         write_mode = "ab" if resume_mode else "wb"
@@ -300,7 +300,7 @@ def init_distributed_training(
                     task = progress.add_task(
                         f"[green]Rank {rank} calculating entropies...", total=None
                     )
-                    
+
                     # Process data, skipping already processed samples if resuming
                     processed_batches = 0
 
@@ -309,23 +309,37 @@ def init_distributed_training(
                         if resume_mode:
                             # Check if this batch contains any of the last sample IDs
                             if any(sid in last_sample_ids for sid in sample_ids):
-                                print(f"Rank {rank}: Found batch containing last processed samples")
+                                print(
+                                    f"Rank {rank}: Found batch containing last processed samples"
+                                )
                                 # Check if this batch exactly matches or contains all the last saved sample IDs
-                                if set(sample_ids) == set(last_sample_ids) or all(sid in last_sample_ids for sid in sample_ids):
-                                    print(f"Rank {rank}: Found last processed batch, will resume from next batch")
+                                if set(sample_ids) == set(last_sample_ids) or all(
+                                    sid in last_sample_ids for sid in sample_ids
+                                ):
+                                    print(
+                                        f"Rank {rank}: Found last processed batch, will resume from next batch"
+                                    )
                                     processed_batches += 1
-                                    # Mark that we've found our resume point 
+                                    # Mark that we've found our resume point
                                     # so the next batch will be processed
                                     resume_mode = False
                                     continue
                                 else:
                                     # This is a partially processed batch - only keep unprocessed samples
-                                    indices_to_process = [i for i, sid in enumerate(sample_ids) if sid not in last_sample_ids]
+                                    indices_to_process = [
+                                        i
+                                        for i, sid in enumerate(sample_ids)
+                                        if sid not in last_sample_ids
+                                    ]
                                     tokens = tokens[indices_to_process]
                                     texts = [texts[i] for i in indices_to_process]
-                                    sample_ids = [sample_ids[i] for i in indices_to_process]
+                                    sample_ids = [
+                                        sample_ids[i] for i in indices_to_process
+                                    ]
                                     resume_mode = False
-                                    print(f"Rank {rank}: Resuming with {len(indices_to_process)} new samples in partially processed batch")
+                                    print(
+                                        f"Rank {rank}: Resuming with {len(indices_to_process)} new samples in partially processed batch"
+                                    )
                             else:
                                 # Skip this batch as it was already processed
                                 processed_batches += 1
@@ -388,7 +402,7 @@ def init_distributed_training(
         # Just log the error - the partial Arrow file is already saved and can be used for resuming
         print(f"Rank {rank}: Error during processing: {e}")
         print(f"Rank {rank}: Partial results saved in {rank_output_file}")
-        
+
         # Re-raise the original error
         raise e
 
