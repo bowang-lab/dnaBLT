@@ -27,3 +27,4 @@ pytorch-lightning
 deepspeed
 fsspec[full]
 orjson
+s3fs
