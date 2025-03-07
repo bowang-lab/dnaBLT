@@ -48,10 +48,11 @@ default_no_recompute_ops = {
     torch.ops.xformers_flash.flash_fwd.default,
 }
 
-if int(os.environ.get("BLT_ALLOW_MISSING_FLEX_ATTENTION", False)) == 0:
-    default_no_recompute_ops.add(
-        torch.ops.xformers.efficient_attention_forward_cutlass.default
-    )
+# TODO: add flex attention
+# if int(os.environ.get("BLT_ALLOW_MISSING_FLEX_ATTENTION", False)) == 0:
+#     default_no_recompute_ops.add(
+#         torch.ops.xformers.efficient_attention_forward_cutlass.default
+#     )
 
 
 class DistributedArgs(BaseModel):
