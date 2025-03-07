@@ -21,7 +21,7 @@ from bytelatent.base_transformer import (
 from bytelatent.checkpoint import CONSOLIDATE_NAME
 from bytelatent.data.file_util import get_fs
 from bytelatent.model.blt import ByteLatentTransformer
-from bytelatent.tokenizers.abstract_tokenizer import Tokenizer
+from bytelatent.blt_tokenizers.abstract_tokenizer import Tokenizer
 from bytelatent.transformer import LMTransformer
 
 
