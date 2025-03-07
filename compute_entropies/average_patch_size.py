@@ -6,24 +6,25 @@ def count_mask_occurrences(mask):
     from collections import defaultdict
 
     counts = defaultdict(int)
-    false_count = 0
-
+    true_count = 0
+    
     for value in mask:
         if value:
-            # If there was a run of False values, record it
-            if false_count > 0:
-                counts[false_count] += 1
-                false_count = 0
-            # Count the True value as 1
-            counts[1] += 1
+            # Increment the True run counter
+            true_count += 1
         else:
-            # Increment the False run counter
-            false_count += 1
-
-    # After the loop, check if the last elements were False
-    if false_count > 0:
-        counts[false_count] += 1
-
+            # If there was a run of True values, record it
+            if true_count > 0:
+                counts[true_count + 1] += 1
+                true_count = 0
+            # Count the False value as 1
+            else:
+                counts[1] += 1
+    
+    # After the loop, check if the last elements were True
+    if true_count > 0:
+        counts[true_count] += 1
+        
     return dict(counts)
 
 
@@ -38,14 +39,14 @@ df1 = loaded_arrays_1.to_pandas()["entropies"]
 df2 = loaded_arrays_2.to_pandas()["entropies"]
 
 for entropies in tqdm(df1):
-    mask = (entropies > 1.335442066192627).tolist()
+    mask = (entropies < 1.335442066192627).tolist()
     # total = sum(count * occurrences for count, occurrences in count_mask_occurrences(mask).items())
     total_occurrences = sum(count_mask_occurrences(mask).values())
     mean = len(mask) / total_occurrences
     rs += mean
 
 for entropies in tqdm(df2):
-    mask = (entropies > 1.335442066192627).tolist()
+    mask = (entropies < 1.335442066192627).tolist()
     # total = sum(count * occurrences for count, occurrences in count_mask_occurrences(mask).items())
     total_occurrences = sum(count_mask_occurrences(mask).values())
     mean = len(mask) / total_occurrences

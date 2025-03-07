@@ -4,9 +4,9 @@
 #SBATCH --job-name=entropy_model
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
-#SBATCH -t 1-00:0:0
+#SBATCH -t 1:00:00
 #SBATCH -p gpu_bwanggroup
-#SBATCH --mem=200G
+#SBATCH --mem=100G
 #SBATCH --reservation=h100
 
 # Source conda
@@ -58,5 +58,5 @@ stdbuf -oL -eL srun --exclusive python3 compute_entropies/auxiliary_entropy.py \
     --data_path $data_path \
     --data_cache_dir $data_path/cache \
     --split validation \
-    --batch_size 4 \
-    --arrow_batch 10 \
+    --batch_size 16 \
+    --arrow_batch 32 \
