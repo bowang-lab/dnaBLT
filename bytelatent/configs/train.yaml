@@ -2,9 +2,9 @@
 # Evals can be activated by uncommenting its config
 # python -m launchers.stool config=apps/main/configs/debug.yaml nodes=8 account=fair_amaia_cw_codegen qos=lowest
 
-dump_dir: /tmp/
+dump_dir: tmp/
 name: "train"
-steps: 100_000
+steps: 1000 #100_000
 probe_freq: null
 seed: 777
 optim:
@@ -27,7 +27,7 @@ model:
   dim_token: 256
   patch_size: 6
   architecture: "vanilla"   # for Mamba use "mamba"
-  tokenization_mode: "bytes"
+  # tokenization_mode: "bytes"  # this shouldnt have been here
   patching_mode: "space"
   tie_local_encoder_decoder_logits: false
   patch_in_forward: false
@@ -62,26 +62,26 @@ model:
   init_use_gaussian: true
   init_use_depth: "current"
   attn_impl: "xformers"
-  attn_bias_type: "block_causal"
+  attn_bias_type: "causal" # "block_causal" based on packing
   alpha_depth: "disabled"
-  max_length: 256
+  max_length: 8192 #256
   local_attention_window_len: 512
-  max_seqlen: 12288
+  max_seqlen: 8192 #12288
   downsampling_by_pooling: "max"
 
 data:
-  root_dir: ???
+  root_dir: /h/afallah/dnaBLT/data/
   sources:
-    dclm_baseline_1.0: 1.0
+    "source_name": 1.0
   batch_size: 2
   prefetch_size: 64
   seq_len: 8192 #4096
   load_async: true
-  preprocess_dir: ???
+  preprocess_dir: null
   tokenizer_args:
     name: blt
     init_kwargs:
-      bpe_tokenizer_path: ???
+      bpe_tokenizer_path: /h/afallah/dnaBLT/llama_tokenizer/original/tokenizer.model
 
 profiling:
   run: false
