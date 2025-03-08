@@ -232,7 +232,7 @@ def init_distributed_training(
     schema = pa.schema([text_field, entropy_field])
 
     try:
-        with pa.OSFile(f"entropies_rank{rank}.arrow", 'wb') as sink:
+        with pa.OSFile(f"test_entropies_rank{rank}.arrow", 'wb') as sink:
             writer = pa.ipc.new_file(sink, schema)
             for tokens, sample_ids, texts in dataloader:
                 tokens = tokens.to(
@@ -246,7 +246,7 @@ def init_distributed_training(
                 entropies_buffer.extend(scores)  # scores shape: [bsz, max_seq_len]
                 text_buffer.extend(texts)
                 
-                if len(entropies_buffer) >= args.arrow_batch or scores.shape[0] < args.batch_size:
+                if len(entropies_buffer) >= arrow_batch or scores.shape[0] < batch_size:
                     # Create pyarrow table
                     batch = pa.record_batch(
                         {"entropies": entropies_buffer, "text": text_buffer},
