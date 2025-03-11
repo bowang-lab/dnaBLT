@@ -1,4 +1,5 @@
 import os
+import time
 import argparse
 import numpy as np
 import torch
@@ -310,7 +311,10 @@ def init_distributed_training(
                     )  # push tokens to GPU
 
                     # Calculate entropies
+                    start_time = time.time()
                     scores = calculate_entropies(tokens, entropy_model, device=rank)
+                    end_time = time.time()
+                    print(f"Took {end_time - start_time} seconds to process {tokens.shape[0]}.")
                     for row, length in zip(scores, lengths):
                         entropies_buffer.append(row[:length].to("cpu", dtype=torch.float16).numpy())
                     text_buffer.extend(texts)
