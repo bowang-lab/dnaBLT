@@ -29,10 +29,10 @@ def count_mask_occurrences(mask):
 
 
 rs = 0
-with pa.memory_map("outputs/out.arrow.0", "r") as source:
+with pa.memory_map("entropies_rank0.arrow", "r") as source:
     loaded_arrays_1 = pa.ipc.open_file(source).read_all()
 
-with pa.memory_map("outputs/out.arrow.1", "r") as source:
+with pa.memory_map("entropies_rank1.arrow", "r") as source:
     loaded_arrays_2 = pa.ipc.open_file(source).read_all()
 
 df1 = loaded_arrays_1.to_pandas()["entropies"]

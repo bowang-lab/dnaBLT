@@ -302,10 +302,10 @@ def init_distributed_training(
                                 print(
                                     f"Rank {rank}: Resuming with {len(indices_to_process)} new samples in partially processed batch"
                                 )
-                    else:
-                        # Skip this batch as it was already processed
-                        processed_batches += 1
-                        continue
+                        else:
+                            # Skip this batch as it was already processed
+                            processed_batches += 1
+                            continue
                     tokens = tokens.to(
                         dtype=torch.int, device=rank
                     )  # push tokens to GPU
