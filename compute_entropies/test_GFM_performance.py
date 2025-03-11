@@ -231,7 +231,7 @@ def init_distributed_training(
     # ---------------------------------------------------------------------
     resume_mode = False
     last_sample_ids = []
-    rank_output_file = f"test_entropies_rank{rank}.arrow"
+    rank_output_file = f"entropies_rank{rank}.arrow"
     
     # Check if the output file exists to potentially resume
     if os.path.exists(rank_output_file):
@@ -259,100 +259,98 @@ def init_distributed_training(
     sample_ids_buffer = []
     entropy_field = pa.field("entropies", pa.list_(pa.float16()), nullable=False)
     text_field = pa.field("text", pa.string(), nullable=False)
-    sample_id_field = pa.field("sample_id", pa.int64(), nullable=False)
+    sample_id_field = pa.field("sample_id", pa.string(), nullable=False)
     schema = pa.schema([sample_id_field, text_field, entropy_field])
     processed_batches = 0
 
     try:
-        with pa.OSFile(f"test_entropies_rank{rank}.arrow", 'wb') as sink:
-            writer = pa.ipc.new_file(sink, schema)
-            for tokens, sample_ids, texts, lengths in dataloader:
-                if resume_mode:
-                    # Check if this batch contains any of the last sample IDs
-                    if any(sid in last_sample_ids for sid in sample_ids):
-                        print(
-                            f"Rank {rank}: Found batch containing last processed samples"
-                        )
-                        # Check if this batch exactly matches or contains all the last saved sample IDs
-                        if set(sample_ids) == set(last_sample_ids) or all(
-                            sid in last_sample_ids for sid in sample_ids
-                        ):
+        with pa.OSFile(rank_output_file, 'wb') as sink:
+            with pa.ipc.new_file(sink, schema) as writer:
+                for tokens, sample_ids, texts, lengths in dataloader:
+                    if resume_mode:
+                        # Check if this batch contains any of the last sample IDs
+                        if any(sid in last_sample_ids for sid in sample_ids):
                             print(
-                                f"Rank {rank}: Found last processed batch, will resume from next batch"
+                                f"Rank {rank}: Found batch containing last processed samples"
                             )
-                            processed_batches += 1
-                            # Mark that we've found our resume point
-                            # so the next batch will be processed
-                            resume_mode = False
-                            continue
-                        else:
-                            # This is a partially processed batch - only keep unprocessed samples
-                            indices_to_process = [
-                                i
-                                for i, sid in enumerate(sample_ids)
-                                if sid not in last_sample_ids
-                            ]
-                            tokens = tokens[indices_to_process]
-                            texts = [texts[i] for i in indices_to_process]
-                            sample_ids = [
-                                sample_ids[i] for i in indices_to_process
-                            ]
-                            resume_mode = False
-                            print(
-                                f"Rank {rank}: Resuming with {len(indices_to_process)} new samples in partially processed batch"
-                            )
+                            # Check if this batch exactly matches or contains all the last saved sample IDs
+                            if set(sample_ids) == set(last_sample_ids) or all(
+                                sid in last_sample_ids for sid in sample_ids
+                            ):
+                                print(
+                                    f"Rank {rank}: Found last processed batch, will resume from next batch"
+                                )
+                                processed_batches += 1
+                                # Mark that we've found our resume point
+                                # so the next batch will be processed
+                                resume_mode = False
+                                continue
+                            else:
+                                # This is a partially processed batch - only keep unprocessed samples
+                                indices_to_process = [
+                                    i
+                                    for i, sid in enumerate(sample_ids)
+                                    if sid not in last_sample_ids
+                                ]
+                                tokens = tokens[indices_to_process]
+                                texts = [texts[i] for i in indices_to_process]
+                                sample_ids = [
+                                    sample_ids[i] for i in indices_to_process
+                                ]
+                                resume_mode = False
+                                print(
+                                    f"Rank {rank}: Resuming with {len(indices_to_process)} new samples in partially processed batch"
+                                )
                     else:
                         # Skip this batch as it was already processed
                         processed_batches += 1
                         continue
-                tokens = tokens.to(
-                    dtype=torch.int, device=rank
-                )  # push tokens to GPU
+                    tokens = tokens.to(
+                        dtype=torch.int, device=rank
+                    )  # push tokens to GPU
 
-                # Calculate entropies
-                scores = calculate_entropies(tokens, entropy_model, device=rank)
-                for row, length in zip(scores, lengths):
-                    entropies_buffer.append(row[:length].to("cpu", dtype=torch.float16).numpy())
-                text_buffer.extend(texts)
-                sample_ids_buffer.extend(sample_ids)
-                
-                if len(entropies_buffer) >= arrow_batch:
-                    # Create pyarrow table
+                    # Calculate entropies
+                    scores = calculate_entropies(tokens, entropy_model, device=rank)
+                    for row, length in zip(scores, lengths):
+                        entropies_buffer.append(row[:length].to("cpu", dtype=torch.float16).numpy())
+                    text_buffer.extend(texts)
+                    sample_ids_buffer.extend(sample_ids)
+                    
+                    if len(entropies_buffer) >= arrow_batch:
+                        # Create pyarrow table
+                        batch = pa.record_batch(
+                            {"entropies": entropies_buffer, "text": text_buffer, "sample_id": sample_ids},
+                            schema
+                        )
+                        
+                        # Use 'ab' (append binary) mode for file operations
+                        # For the first write, this is same as 'wb', for subsequent writes it appends
+                        
+                        writer.write_batch(batch)
+                        
+                        entropies_buffer = []
+                        text_buffer = []
+                        sample_ids_buffer = []
+
+                        """
+                        with pa.memory_map(output_file, "r") as source:
+                            reader = pa.ipc.open_file(source)
+
+                            # Process and write one batch at a time
+                            df = reader.read_pandas()
+
+                        """
+                    
+                if len(entropies_buffer) > 0:
                     batch = pa.record_batch(
-                        {"entropies": entropies_buffer, "text": text_buffer, "sample_id": sample_ids},
+                        {"entropies": entropies_buffer, "text": text_buffer, "sample_id": sample_ids_buffer},
                         schema
                     )
-                    
-                    # Use 'ab' (append binary) mode for file operations
-                    # For the first write, this is same as 'wb', for subsequent writes it appends
-                    
                     writer.write_batch(batch)
-                    
+
                     entropies_buffer = []
                     text_buffer = []
                     sample_ids_buffer = []
-
-                    """
-                    with pa.memory_map(output_file, "r") as source:
-                        reader = pa.ipc.open_file(source)
-
-                        # Process and write one batch at a time
-                        df = reader.read_pandas()
-
-                    """
-                
-            if len(entropies_buffer) > 0:
-                batch = pa.record_batch(
-                    {"entropies": entropies_buffer, "text": text_buffer, "sample_id": sample_ids_buffer},
-                    schema
-                )
-                writer.write_batch(batch)
-
-                entropies_buffer = []
-                text_buffer = []
-                sample_ids_buffer = []
-
-            writer.close()
 
     except Exception as e:
         # Just log the error - the partial Arrow file is already saved and can be used for resuming
