@@ -10,6 +10,8 @@ from datasets import config, load_dataset
 from evo2 import Evo2
 import pyarrow as pa
 MAX_LENGTH = 8192
+PAD_TOKEN = 1
+
 
 
 # -------------------------------------------------------------------------
@@ -93,6 +95,7 @@ def collate(sequences: list):
     # Pad to max length in the batch
     text = [s["text"] for s in sequences]
     record = [s["record"] for s in sequences]
+    lengths = [s["length"] for s in sequences]
 
 
     return (
@@ -104,10 +107,11 @@ def collate(sequences: list):
                 for s in text
             ],
             batch_first=True,
-            padding_value=1,  # StripedHyena CharTokenizer pad token. eod and eos are 0.
+            padding_value=PAD_TOKEN,  # StripedHyena CharTokenizer pad token. eod and eos are 0.
         ),
         record,
         text,
+        lengths,
     )
 
 
@@ -222,34 +226,100 @@ def init_distributed_training(
     # ---------------------------------------------------------------------
     # 3. Load model & wrap with DistributedDataParallel
     # ---------------------------------------------------------------------
+    # ---------------------------------------------------------------------
+    # Resume functionality - check if we need to resume from an existing file
+    # ---------------------------------------------------------------------
+    resume_mode = False
+    last_sample_ids = []
+    rank_output_file = f"test_entropies_rank{rank}.arrow"
+    
+    # Check if the output file exists to potentially resume
+    if os.path.exists(rank_output_file):
+        try:
+            # Read the existing Arrow file to get the last batch
+            with pa.memory_map(rank_output_file, "r") as source:
+                reader = pa.ipc.open_file(source)
+                # Get the last batch if any batches exist
+                num_processed_batches = reader.num_record_batches
+                if num_processed_batches > 0:
+                    last_batch = reader.get_batch(num_processed_batches - 1)
+                    last_batch_dict = last_batch.to_pydict()
+                    last_sample_ids = last_batch_dict["sample_id"]
+                    resume_mode = True
+                    print(f"Rank {rank}: Found existing file with {num_processed_batches} batches.")
+                    print(f"Rank {rank}: Last batch has {len(last_sample_ids)} samples.")
+        except Exception as e:
+            print(f"Rank {rank}: Error reading existing file: {e}")
+            print(f"Rank {rank}: Starting from beginning")
+            resume_mode = False
 
     entropy_model = Evo2("evo2_1b_base", device=rank)
     entropies_buffer = []
     text_buffer = []
-
+    sample_ids_buffer = []
     entropy_field = pa.field("entropies", pa.list_(pa.float16()), nullable=False)
     text_field = pa.field("text", pa.string(), nullable=False)
-    schema = pa.schema([text_field, entropy_field])
+    sample_id_field = pa.field("sample_id", pa.int64(), nullable=False)
+    schema = pa.schema([sample_id_field, text_field, entropy_field])
+    processed_batches = 0
 
     try:
         with pa.OSFile(f"test_entropies_rank{rank}.arrow", 'wb') as sink:
             writer = pa.ipc.new_file(sink, schema)
-            for tokens, sample_ids, texts in dataloader:
+            for tokens, sample_ids, texts, lengths in dataloader:
+                if resume_mode:
+                    # Check if this batch contains any of the last sample IDs
+                    if any(sid in last_sample_ids for sid in sample_ids):
+                        print(
+                            f"Rank {rank}: Found batch containing last processed samples"
+                        )
+                        # Check if this batch exactly matches or contains all the last saved sample IDs
+                        if set(sample_ids) == set(last_sample_ids) or all(
+                            sid in last_sample_ids for sid in sample_ids
+                        ):
+                            print(
+                                f"Rank {rank}: Found last processed batch, will resume from next batch"
+                            )
+                            processed_batches += 1
+                            # Mark that we've found our resume point
+                            # so the next batch will be processed
+                            resume_mode = False
+                            continue
+                        else:
+                            # This is a partially processed batch - only keep unprocessed samples
+                            indices_to_process = [
+                                i
+                                for i, sid in enumerate(sample_ids)
+                                if sid not in last_sample_ids
+                            ]
+                            tokens = tokens[indices_to_process]
+                            texts = [texts[i] for i in indices_to_process]
+                            sample_ids = [
+                                sample_ids[i] for i in indices_to_process
+                            ]
+                            resume_mode = False
+                            print(
+                                f"Rank {rank}: Resuming with {len(indices_to_process)} new samples in partially processed batch"
+                            )
+                    else:
+                        # Skip this batch as it was already processed
+                        processed_batches += 1
+                        continue
                 tokens = tokens.to(
                     dtype=torch.int, device=rank
                 )  # push tokens to GPU
 
                 # Calculate entropies
                 scores = calculate_entropies(tokens, entropy_model, device=rank)
-                scores = scores.cpu().contiguous().to(torch.float16).numpy()
-                # Collect data for this batch
-                entropies_buffer.extend(scores)  # scores shape: [bsz, max_seq_len]
+                for row, length in zip(scores, lengths):
+                    entropies_buffer.append(row[:length].to("cpu", dtype=torch.float16).numpy())
                 text_buffer.extend(texts)
+                sample_ids_buffer.extend(sample_ids)
                 
-                if len(entropies_buffer) >= arrow_batch or scores.shape[0] < batch_size:
+                if len(entropies_buffer) >= arrow_batch:
                     # Create pyarrow table
                     batch = pa.record_batch(
-                        {"entropies": entropies_buffer, "text": text_buffer},
+                        {"entropies": entropies_buffer, "text": text_buffer, "sample_id": sample_ids},
                         schema
                     )
                     
@@ -260,6 +330,7 @@ def init_distributed_training(
                     
                     entropies_buffer = []
                     text_buffer = []
+                    sample_ids_buffer = []
 
                     """
                     with pa.memory_map(output_file, "r") as source:
@@ -269,6 +340,17 @@ def init_distributed_training(
                         df = reader.read_pandas()
 
                     """
+                
+            if len(entropies_buffer) > 0:
+                batch = pa.record_batch(
+                    {"entropies": entropies_buffer, "text": text_buffer, "sample_id": sample_ids_buffer},
+                    schema
+                )
+                writer.write_batch(batch)
+
+                entropies_buffer = []
+                text_buffer = []
+                sample_ids_buffer = []
 
             writer.close()
 
