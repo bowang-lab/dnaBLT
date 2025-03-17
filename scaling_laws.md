@@ -13,8 +13,8 @@ Recall: $\text{FLOPS}_{\text{StripedHyena}} = \lambda\;\text{FLOPS}_{\text{Hyena
   $$6LD^2$$
 
 - **MHA attention:**  
-  $$4L \times 2D + 2H L^2$$  
-  $$= 8LD + 2H L^2$$
+  $$4L^2D + 2H L^2$$  
+  $$= 2L^2(2D+H)
 
 - **MHA out layer:**  
   $$2LD^2$$
@@ -25,13 +25,13 @@ Recall: $\text{FLOPS}_{\text{StripedHyena}} = \lambda\;\text{FLOPS}_{\text{Hyena
 *Summing the MHA‐GLU parts gives:*
 
 $$
-\text{FLOPS}_{\text{MHA-GLU}} = 4LDV + 6LD D_{\text{glu}} + (6LD^2 + 2LD^2) + 8LD + 2HL^2
+\text{FLOPS}_{\text{MHA-GLU}} = 4LDV + 6LD\,D_{\text{glu}} + (6LD^2 + 2LD^2) + 2L^2(2D+H)
 $$
 
 or, after combining the \(D^2\) terms:
 
 $$
-\text{FLOPS}_{\text{MHA-GLU}} = 4LDV + 6LD D_{\text{glu}} + 8LD^2 + 8LD + 2HL^2.
+\text{FLOPS}_{\text{MHA-GLU}} = 4LDV + 6LD\,D_{\text{glu}} + 8LD^2 + 2L^2(2D+H).
 $$
 
 In the paper, they mention the MHA-GLU FLOPs calculations come from the Transformer++ section in the paper.
@@ -79,6 +79,6 @@ Using the mixing ratio $\lambda$ for the Hyena branch (and $1-\lambda$ for the M
 $$
 \begin{aligned}
 \text{FLOPS}_{\text{StripedHyena}} = \; & \lambda\Bigl[4LDV + 6LD D_{\text{glu}} + 8LD^2 + 22LD + 10L\log_2(L)D + \text{Shyena} LD^9\Bigr] \\
-& + (1-\lambda)\Bigl[4LDV + 6LD D_{\text{glu}} + 8LD^2 + 8LD + 2HL^2\Bigr].
+& + (1-\lambda)\Bigl[4LDV + 6LD\,D_{\text{glu}} + 8LD^2 + 2L^2(2D+H)\Bigr].
 \end{aligned}
 $$
