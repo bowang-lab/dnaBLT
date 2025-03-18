@@ -1,18 +1,58 @@
 import os
 import time
 import argparse
+import random
+from math import ceil
 import numpy as np
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
-from torch.utils.data import DataLoader, Sampler
+from torch.utils.data import DataLoader, Sampler, Dataset
 from torch.nn.utils.rnn import pad_sequence
 from datasets import config, load_dataset
 from evo2 import Evo2
 import pyarrow as pa
+
 MAX_LENGTH = 8192
 PAD_TOKEN = 1
 
+
+# -------------------------------------------------------------------------
+# Custom dataloader
+# -------------------------------------------------------------------------
+class FaceLandmarksDataset(Dataset):
+    """Face Landmarks dataset."""
+
+    def __init__(self, csv_file, root_dir, transform=None):
+        """
+        Args:
+            csv_file (string): Path to the csv file with annotations.
+            root_dir (string): Directory with all the images.
+            transform (callable, optional): Optional transform to be applied
+                on a sample.
+        """
+        self.landmarks_frame = pd.read_csv(csv_file)
+        self.root_dir = root_dir
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.landmarks_frame)
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        img_name = os.path.join(self.root_dir, self.landmarks_frame.iloc[idx, 0])
+        image = io.imread(img_name)
+        landmarks = self.landmarks_frame.iloc[idx, 1:]
+        landmarks = np.array([landmarks])
+        landmarks = landmarks.astype("float").reshape(-1, 2)
+        sample = {"image": image, "landmarks": landmarks}
+
+        if self.transform:
+            sample = self.transform(sample)
+
+        return sample
 
 
 # -------------------------------------------------------------------------
@@ -27,7 +67,11 @@ class LengthAwareDistributedBatchSampler(Sampler):
         rank=None,
         shuffle=False,
         lengths=None,
+        seed=None,
+        segment_size=None,
     ):
+        # NOTE: This should just return the indices of the segments. We'll need to define them all and then split them into batches and allocate to ranks.
+
         # Initialize num_replicas, rank, and compute lengths as before...
         if num_replicas is None:
             if not dist.is_available():
@@ -43,6 +87,9 @@ class LengthAwareDistributedBatchSampler(Sampler):
         self.num_replicas = num_replicas
         self.rank = rank
         self.shuffle = shuffle
+        self.seed = seed
+        self.segment_size = segment_size
+        self.rng = np.random.RandomState(seed)
 
         if lengths is None:
             self.lengths = [sample["length"] for sample in dataset]
@@ -50,43 +97,55 @@ class LengthAwareDistributedBatchSampler(Sampler):
             self.lengths = lengths
         self.dataset_size = len(self.dataset)
 
+        self.segments_per_doc = []
+
+        # TOTAL_SEGMENT_FORMAT: (doc_id, start_idx, length)
+
+        for i, length in enumerate(self.lengths):
+            quotient, remainder = divmod(length, self.segment_size)
+            # [ACT][GAC][TGA][CT] when start = 0. [A][CTG][ACT][GAC][T] when start = 1. [AC][TGA][CTG][ACT] when start = 2.
+            start = random.randint(0, remainder)
+            end = remainder - start
+            if start:
+                self.segments_per_doc.append((i, 0, start))
+
+            for x in range(quotient):
+                self.segments_per_doc.append((i, start, self.segment_size))
+                start += self.segment_size
+
+            if end:
+                self.segments_per_doc.append((i, start, end))
+
+        self.total_segments = len(self.segments_per_doc)
+
     def __iter__(self):
         # 1. Sort indices by sequence length.
-        indices = list(range(self.dataset_size))
-        indices.sort(key=lambda idx: self.lengths[idx])
+        indices = list(range(self.total_segments))
+        self.segments_per_doc.sort(key=lambda idx: self.segments_per_doc[idx][2])
 
-        # 2. Group indices into batches.
         batches = [
-            indices[i : i + self.batch_size]
+            self.segments_per_doc[i : min(i + self.batch_size, len(indices))]
             for i in range(0, len(indices), self.batch_size)
         ]
-        if self.shuffle:
-            np.random.shuffle(batches)
 
         total_batches = len(batches)
         base_batches = total_batches // self.num_replicas
         even_count = base_batches * self.num_replicas
 
-        # 3. Assign batches evenly (via round-robin) for the evenly-divisible part.
-        batches_for_rank = [
+        self.batches_for_rank = [
             batches[i]
             for i in range(even_count)
             if (i % self.num_replicas == self.rank)
         ]
-        # 4. Allocate remaining extra batches solely to rank 0.
+        # 4. Allocate remaining extra batches solely to rank 0. Trivial max of 3 additional samples lol (num GPUs).
         if self.rank == 0:
-            batches_for_rank.extend(batches[even_count:])
-
-        yield from batches_for_rank
+            self.batches_for_rank.extend(batches[even_count:])
+        yield from self.batches_for_rank
 
     def __len__(self):
-        total_batches = (self.dataset_size + self.batch_size - 1) // self.batch_size
-        base_batches = total_batches // self.num_replicas
-        remainder = total_batches % self.num_replicas
-        if self.rank == 0:
-            return base_batches + remainder
-        else:
-            return base_batches
+        num_batches = ceil(self.total_segments / self.batch_size)
+        base_batches = num_batches // self.num_replicas
+        return base_batches + (num_batches - base_batches if self.rank == 0 else 0)
 
 
 # -------------------------------------------------------------------------
@@ -94,10 +153,29 @@ class LengthAwareDistributedBatchSampler(Sampler):
 # -------------------------------------------------------------------------
 def collate(sequences: list):
     # Pad to max length in the batch
-    text = [s["text"] for s in sequences]
-    record = [s["record"] for s in sequences]
-    lengths = [s["length"] for s in sequences]
+    texts = []
+    records = []
+    lengths = []
+    sample_ids = []
 
+    for doc_idx, segment_idx in sequences:
+        sample = dataset[doc_idx]
+        full_text = sample["text"]
+        record = sample["record"]
+
+        # Calculate segment start and end positions
+        segment_start = segment_idx * MAX_LENGTH
+        segment_end = min(segment_start + MAX_LENGTH, len(full_text))
+
+        # Extract the segment
+        segment_text = full_text[segment_start:segment_end]
+        segment_length = len(segment_text)
+
+        texts.append(segment_text)
+        records.append(record)
+        lengths.append(segment_length)
+        # Use a combination of record ID and segment index as the unique sample ID
+        sample_ids.append(f"{record}_{segment_idx}")
 
     return (
         pad_sequence(
@@ -168,9 +246,24 @@ def calculate_entropies(tokens: torch.tensor, model: torch.nn.Module, device):
     return concat_entropies
 
 
-def add_length(example):
-    example["length"] = len(example["text"])
-    return example
+# ! This approach introduces overlap for the last segment. Is this the best approach?
+def add_length(batch):
+    return {"length": [len(text) for text in batch["text"]]}
+    # Calculate number of segments
+    # num_segments, segment_remainder = divmod(len(example["text"]), segment_size)
+    # example["num_segments"] = num_segments
+    # example["segment_remainder"] = segment_remainder
+    # Create segments
+
+    # for i in range(num_segments):
+    #     start_idx = i * segment_size
+    #     end_idx = min(start_idx + segment_size, len(text))
+    #     segment = text[start_idx:end_idx]
+    #
+    #     segments.append(segment)
+    #     segment_records.append(record)
+    #     segment_ids.append(f"{record}_{i}")
+
 
 def init_distributed_training(
     rank,
@@ -204,7 +297,7 @@ def init_distributed_training(
     if rank > 0:
         dist.barrier()
 
-    data = data.map(add_length)
+    data = data.map(add_length, batched=True, num_proc=4)
 
     if rank == 0:
         dist.barrier()
@@ -233,7 +326,7 @@ def init_distributed_training(
     resume_mode = False
     last_sample_ids = []
     rank_output_file = f"entropies_rank{rank}.arrow"
-    
+
     # Check if the output file exists to potentially resume
     if os.path.exists(rank_output_file):
         try:
@@ -247,8 +340,12 @@ def init_distributed_training(
                     last_batch_dict = last_batch.to_pydict()
                     last_sample_ids = last_batch_dict["sample_id"]
                     resume_mode = True
-                    print(f"Rank {rank}: Found existing file with {num_processed_batches} batches.")
-                    print(f"Rank {rank}: Last batch has {len(last_sample_ids)} samples.")
+                    print(
+                        f"Rank {rank}: Found existing file with {num_processed_batches} batches."
+                    )
+                    print(
+                        f"Rank {rank}: Last batch has {len(last_sample_ids)} samples."
+                    )
         except Exception as e:
             print(f"Rank {rank}: Error reading existing file: {e}")
             print(f"Rank {rank}: Starting from beginning")
@@ -265,7 +362,7 @@ def init_distributed_training(
     processed_batches = 0
 
     try:
-        with pa.OSFile(rank_output_file, 'wb') as sink:
+        with pa.OSFile(rank_output_file, "wb") as sink:
             with pa.ipc.new_file(sink, schema) as writer:
                 for tokens, sample_ids, texts, lengths in dataloader:
                     if resume_mode:
@@ -295,9 +392,7 @@ def init_distributed_training(
                                 ]
                                 tokens = tokens[indices_to_process]
                                 texts = [texts[i] for i in indices_to_process]
-                                sample_ids = [
-                                    sample_ids[i] for i in indices_to_process
-                                ]
+                                sample_ids = [sample_ids[i] for i in indices_to_process]
                                 resume_mode = False
                                 print(
                                     f"Rank {rank}: Resuming with {len(indices_to_process)} new samples in partially processed batch"
@@ -314,24 +409,32 @@ def init_distributed_training(
                     start_time = time.time()
                     scores = calculate_entropies(tokens, entropy_model, device=rank)
                     end_time = time.time()
-                    print(f"Took {end_time - start_time} seconds to process {tokens.shape[0]}.")
+                    print(
+                        f"Took {end_time - start_time} seconds to process {tokens.shape[0]}."
+                    )
                     for row, length in zip(scores, lengths):
-                        entropies_buffer.append(row[:length].to("cpu", dtype=torch.float16).numpy())
+                        entropies_buffer.append(
+                            row[:length].to("cpu", dtype=torch.float16).numpy()
+                        )
                     text_buffer.extend(texts)
                     sample_ids_buffer.extend(sample_ids)
-                    
+
                     if len(entropies_buffer) >= arrow_batch:
                         # Create pyarrow table
                         batch = pa.record_batch(
-                            {"entropies": entropies_buffer, "text": text_buffer, "sample_id": sample_ids},
-                            schema
+                            {
+                                "entropies": entropies_buffer,
+                                "text": text_buffer,
+                                "sample_id": sample_ids,
+                            },
+                            schema,
                         )
-                        
+
                         # Use 'ab' (append binary) mode for file operations
                         # For the first write, this is same as 'wb', for subsequent writes it appends
-                        
+
                         writer.write_batch(batch)
-                        
+
                         entropies_buffer = []
                         text_buffer = []
                         sample_ids_buffer = []
@@ -344,11 +447,15 @@ def init_distributed_training(
                             df = reader.read_pandas()
 
                         """
-                    
+
                 if len(entropies_buffer) > 0:
                     batch = pa.record_batch(
-                        {"entropies": entropies_buffer, "text": text_buffer, "sample_id": sample_ids_buffer},
-                        schema
+                        {
+                            "entropies": entropies_buffer,
+                            "text": text_buffer,
+                            "sample_id": sample_ids_buffer,
+                        },
+                        schema,
                     )
                     writer.write_batch(batch)
 
