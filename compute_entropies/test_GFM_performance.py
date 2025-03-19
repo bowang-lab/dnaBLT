@@ -20,10 +20,10 @@ PAD_TOKEN = 1
 # -------------------------------------------------------------------------
 # Custom dataloader
 # -------------------------------------------------------------------------
-class FaceLandmarksDataset(Dataset):
+class EntropyDataset(Dataset):
     """Face Landmarks dataset."""
 
-    def __init__(self, csv_file, root_dir, transform=None):
+    def __init__(self, hf_dataset):
         """
         Args:
             csv_file (string): Path to the csv file with annotations.
@@ -31,28 +31,21 @@ class FaceLandmarksDataset(Dataset):
             transform (callable, optional): Optional transform to be applied
                 on a sample.
         """
-        self.landmarks_frame = pd.read_csv(csv_file)
-        self.root_dir = root_dir
-        self.transform = transform
+        self.dataset = hf_dataset
 
     def __len__(self):
-        return len(self.landmarks_frame)
+        return len(self.dataset)
 
     def __getitem__(self, idx):
-        if torch.is_tensor(idx):
-            idx = idx.tolist()
-
-        img_name = os.path.join(self.root_dir, self.landmarks_frame.iloc[idx, 0])
-        image = io.imread(img_name)
-        landmarks = self.landmarks_frame.iloc[idx, 1:]
-        landmarks = np.array([landmarks])
-        landmarks = landmarks.astype("float").reshape(-1, 2)
-        sample = {"image": image, "landmarks": landmarks}
-
-        if self.transform:
-            sample = self.transform(sample)
-
-        return sample
+        # idx is of format (doc_id, start_idx, length)
+        doc_id, start_idx, length = idx
+        sample = self.dataset[doc_id]
+        text_sample = sample["text"][start_idx : start_idx + length]
+        record = sample["record"] + "_" + str(start_idx) + "_" + str(length)
+        tokenized_text = torch.from_numpy(
+            np.frombuffer(bytearray(text_sample.encode("utf-8")), dtype=np.uint8)
+        )
+        return {"text": tokenized_text, "record": record, "length": length}
 
 
 # -------------------------------------------------------------------------
@@ -66,7 +59,6 @@ class LengthAwareDistributedBatchSampler(Sampler):
         num_replicas=None,
         rank=None,
         shuffle=False,
-        lengths=None,
         seed=None,
         segment_size=None,
     ):
@@ -91,18 +83,12 @@ class LengthAwareDistributedBatchSampler(Sampler):
         self.segment_size = segment_size
         self.rng = np.random.RandomState(seed)
 
-        if lengths is None:
-            self.lengths = [sample["length"] for sample in dataset]
-        else:
-            self.lengths = lengths
-        self.dataset_size = len(self.dataset)
-
         self.segments_per_doc = []
 
         # TOTAL_SEGMENT_FORMAT: (doc_id, start_idx, length)
 
-        for i, length in enumerate(self.lengths):
-            quotient, remainder = divmod(length, self.segment_size)
+        for i, sample in enumerate(self.dataset):
+            quotient, remainder = divmod(len(sample["text"]), self.segment_size)
             # [ACT][GAC][TGA][CT] when start = 0. [A][CTG][ACT][GAC][T] when start = 1. [AC][TGA][CTG][ACT] when start = 2.
             start = random.randint(0, remainder)
             end = remainder - start
@@ -246,25 +232,6 @@ def calculate_entropies(tokens: torch.tensor, model: torch.nn.Module, device):
     return concat_entropies
 
 
-# ! This approach introduces overlap for the last segment. Is this the best approach?
-def add_length(batch):
-    return {"length": [len(text) for text in batch["text"]]}
-    # Calculate number of segments
-    # num_segments, segment_remainder = divmod(len(example["text"]), segment_size)
-    # example["num_segments"] = num_segments
-    # example["segment_remainder"] = segment_remainder
-    # Create segments
-
-    # for i in range(num_segments):
-    #     start_idx = i * segment_size
-    #     end_idx = min(start_idx + segment_size, len(text))
-    #     segment = text[start_idx:end_idx]
-    #
-    #     segments.append(segment)
-    #     segment_records.append(record)
-    #     segment_ids.append(f"{record}_{i}")
-
-
 def init_distributed_training(
     rank,
     world_size,
@@ -293,14 +260,6 @@ def init_distributed_training(
     # Message indicating the process has passed the barrier
     print(f"Process {rank} passed barrier")
     data = load_dataset(f"{data_path}/stage1", split=split).with_format("torch")
-
-    if rank > 0:
-        dist.barrier()
-
-    data = data.map(add_length, batched=True, num_proc=4)
-
-    if rank == 0:
-        dist.barrier()
 
     # Standard PyTorch DistributedSampler (removes your custom length-sorting).
     # If you need length-based sorting globally, you need a custom distributed sampler.
