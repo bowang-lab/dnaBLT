@@ -60,3 +60,4 @@ stdbuf -oL -eL srun --exclusive python3 compute_entropies/test_GFM_performance.p
     --split validation \
     --batch_size 16 \
     --arrow_batch 16 \
+    --num_tokens 40000000000 \

@@ -188,7 +188,7 @@ def calculate_entropies(tokens: torch.tensor, model: torch.nn.Module, device):
         split_indices = np.cumsum(seq_lengths)[:-1]
         nested_entropies = np.split(valid_pred_entropies, split_indices)
 
-    return nested_entropies
+    return nested_entropies, sum(seq_lengths)
 
 
 def init_distributed_training(
@@ -325,7 +325,7 @@ def init_distributed_training(
 
                     # Calculate entropies
                     start_time = time.time()
-                    scores = calculate_entropies(tokens, entropy_model, device=rank)
+                    scores, batch_tokens = calculate_entropies(tokens, entropy_model, device=rank)
                     end_time = time.time()
                     print(
                         f"Took {end_time - start_time} seconds to process {tokens.shape[0]}."
@@ -334,7 +334,7 @@ def init_distributed_training(
                     text_buffer.extend(texts)
                     sample_ids_buffer.extend(sample_ids)
 
-                    processed_tokens += tokens.shape[0]
+                    processed_tokens += batch_tokens
 
                     if len(entropies_buffer) >= arrow_batch:
                         # Create pyarrow table
