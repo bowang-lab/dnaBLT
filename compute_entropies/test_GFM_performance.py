@@ -45,7 +45,11 @@ class EntropyDataset(Dataset):
         tokenized_text = torch.from_numpy(
             np.frombuffer(bytearray(text_sample.encode("utf-8")), dtype=np.uint8)
         )
-        return {"text": tokenized_text, "record": record, "length": length}
+        return {
+            "tokens": tokenized_text,
+            "record": record,
+            "text": text_sample,
+        }
 
 
 # -------------------------------------------------------------------------
@@ -138,45 +142,15 @@ class LengthAwareDistributedBatchSampler(Sampler):
 # Collate function (unchanged)
 # -------------------------------------------------------------------------
 def collate(sequences: list):
-    # Pad to max length in the batch
-    texts = []
-    records = []
-    lengths = []
-    sample_ids = []
-
-    for doc_idx, segment_idx in sequences:
-        sample = dataset[doc_idx]
-        full_text = sample["text"]
-        record = sample["record"]
-
-        # Calculate segment start and end positions
-        segment_start = segment_idx * MAX_LENGTH
-        segment_end = min(segment_start + MAX_LENGTH, len(full_text))
-
-        # Extract the segment
-        segment_text = full_text[segment_start:segment_end]
-        segment_length = len(segment_text)
-
-        texts.append(segment_text)
-        records.append(record)
-        lengths.append(segment_length)
-        # Use a combination of record ID and segment index as the unique sample ID
-        sample_ids.append(f"{record}_{segment_idx}")
-
     return (
+        # actual tokens
         pad_sequence(
-            [
-                torch.from_numpy(
-                    np.frombuffer(bytearray(s.encode("utf-8")), dtype=np.uint8)
-                )
-                for s in text
-            ],
+            [s["tokens"] for s in sequences],
             batch_first=True,
             padding_value=PAD_TOKEN,  # StripedHyena CharTokenizer pad token. eod and eos are 0.
         ),
-        record,
-        text,
-        lengths,
+        [s["record"] for s in sequences],  # database id
+        [s["text"] for s in sequences],  # nucleotide
     )
 
 
@@ -200,36 +174,21 @@ def calculate_entropies(tokens: torch.tensor, model: torch.nn.Module, device):
     Return shape: [batch_size, seq_len]
     """
     with torch.inference_mode():
-        entropies = []
         # MAX_LENGTH = getattr(model, "MAX_LENGTH", 8192)
-        batch_numel = MAX_LENGTH * tokens.size(0)
+        mask = tokens != PAD_TOKEN
+        seq_lengths = mask.sum(dim=1).tolist()
 
-        # Flatten and split into blocks of (batch_size * MAX_LENGTH)
-        splits = torch.split(tokens.flatten(), batch_numel)
+        # NOTE: StripedHyena2 seems to output some "inference_params_dict_out" object that we don't need.
+        outputs, _ = model(tokens)  # => [batch, MAX_LENGTH, vocab]
+        pred = outputs[0]
+        pred_entropies = entropy(pred).cpu().numpy()  # => [batch, seq_len]
+        mask_np = mask.cpu().numpy()
 
-        for split in splits:
-            pad_size = (MAX_LENGTH - (split.numel() % MAX_LENGTH)) % MAX_LENGTH
-            pad = torch.ones(
-                pad_size, dtype=split.dtype, device=split.device
-            )  # Evo tokenizer pad is 1
-            split = torch.cat((split, pad), dim=0)
-            split = split.reshape(-1, MAX_LENGTH)
+        valid_pred_entropies = pred_entropies[mask_np]
+        split_indices = np.cumsum(seq_lengths)[:-1]
+        nested_entropies = np.split(valid_pred_entropies, split_indices)
 
-            split = split.to(device)
-
-            # NOTE: StripedHyena2 seems to output some "inference_params_dict_out" object that we don't need.
-            outputs, _ = model(split)  # => [batch, MAX_LENGTH, vocab]
-            pred = outputs[0]
-
-            # Remove padding
-            pred = pred.reshape(-1, pred.shape[-1])[: split.numel() - pad_size, :]
-
-            pred_entropies = entropy(pred)  # => [batch * seq_len]
-            entropies.append(pred_entropies)
-
-        concat_entropies = torch.cat(entropies, dim=0)
-        concat_entropies = concat_entropies.reshape(tokens.shape)
-    return concat_entropies
+    return nested_entropies
 
 
 def init_distributed_training(
@@ -243,6 +202,7 @@ def init_distributed_training(
     split,
     batch_size,
     arrow_batch=10,
+    num_tokens=4e10,
 ):
     # Set environment variables for master address and port
     os.environ["MASTER_ADDR"] = master_addr
@@ -259,7 +219,8 @@ def init_distributed_training(
 
     # Message indicating the process has passed the barrier
     print(f"Process {rank} passed barrier")
-    data = load_dataset(f"{data_path}/stage1", split=split).with_format("torch")
+    hf_data = load_dataset(f"{data_path}/stage1", split=split).with_format("torch")
+    data = EntropyDataset(hf_data)
 
     # Standard PyTorch DistributedSampler (removes your custom length-sorting).
     # If you need length-based sorting globally, you need a custom distributed sampler.
@@ -318,7 +279,7 @@ def init_distributed_training(
     text_field = pa.field("text", pa.string(), nullable=False)
     sample_id_field = pa.field("sample_id", pa.string(), nullable=False)
     schema = pa.schema([sample_id_field, text_field, entropy_field])
-    processed_batches = 0
+    processed_tokens = 0
 
     try:
         with pa.OSFile(rank_output_file, "wb") as sink:
@@ -337,7 +298,6 @@ def init_distributed_training(
                                 print(
                                     f"Rank {rank}: Found last processed batch, will resume from next batch"
                                 )
-                                processed_batches += 1
                                 # Mark that we've found our resume point
                                 # so the next batch will be processed
                                 resume_mode = False
@@ -358,7 +318,6 @@ def init_distributed_training(
                                 )
                         else:
                             # Skip this batch as it was already processed
-                            processed_batches += 1
                             continue
                     tokens = tokens.to(
                         dtype=torch.int, device=rank
@@ -371,12 +330,11 @@ def init_distributed_training(
                     print(
                         f"Took {end_time - start_time} seconds to process {tokens.shape[0]}."
                     )
-                    for row, length in zip(scores, lengths):
-                        entropies_buffer.append(
-                            row[:length].to("cpu", dtype=torch.float16).numpy()
-                        )
+                    entropies_buffer.extend(scores)
                     text_buffer.extend(texts)
                     sample_ids_buffer.extend(sample_ids)
+
+                    processed_tokens += tokens.shape[0]
 
                     if len(entropies_buffer) >= arrow_batch:
                         # Create pyarrow table
@@ -398,14 +356,8 @@ def init_distributed_training(
                         text_buffer = []
                         sample_ids_buffer = []
 
-                        """
-                        with pa.memory_map(output_file, "r") as source:
-                            reader = pa.ipc.open_file(source)
-
-                            # Process and write one batch at a time
-                            df = reader.read_pandas()
-
-                        """
+                        if processed_tokens >= num_tokens:
+                            break
 
                 if len(entropies_buffer) > 0:
                     batch = pa.record_batch(
@@ -457,6 +409,7 @@ def main_worker(local_rank, args):
         split=args.split,
         batch_size=args.batch_size,
         arrow_batch=args.arrow_batch,
+        num_tokens=args.num_tokens,
     )
 
 
@@ -509,6 +462,12 @@ if __name__ == "__main__":
         type=str,
         required=True,
         help="The directory to cache the Open Genome dataset",
+    )
+    parser.add_argument(
+        "--num_tokens",
+        type=int,
+        required=True,
+        help="The number of tokens to process entropies",
     )
 
     args = parser.parse_args()
