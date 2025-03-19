@@ -111,7 +111,9 @@ class LengthAwareDistributedBatchSampler(Sampler):
     def __iter__(self):
         # 1. Sort indices by sequence length.
         indices = list(range(self.total_segments))
-        self.segments_per_doc.sort(key=lambda idx: self.segments_per_doc[idx][2])
+        self.segments_per_doc.sort(
+            key=lambda idx: self.segments_per_doc[idx][2], reverse=True
+        )
 
         batches = [
             self.segments_per_doc[i : min(i + self.batch_size, len(indices))]
@@ -325,7 +327,9 @@ def init_distributed_training(
 
                     # Calculate entropies
                     start_time = time.time()
-                    scores, batch_tokens = calculate_entropies(tokens, entropy_model, device=rank)
+                    scores, batch_tokens = calculate_entropies(
+                        tokens, entropy_model, device=rank
+                    )
                     end_time = time.time()
                     print(
                         f"Took {end_time - start_time} seconds to process {tokens.shape[0]}."
