@@ -252,3 +252,191 @@ class TransformerFLOPsCalculator:
         results = self.run_scaling_experiments(flop_budgets, token_ranges)
         self.save_results(results)
         return results
+
+
+import math
+
+class StripedHyenaFLOPsCalculator:
+    """
+    A class for calculating FLOPs for the Striped Hyena architecture.
+    The total FLOP cost is a mixture of the Hyena‐GLU and MHA‐GLU costs,
+    controlled by the mixing ratio λ (0 ≤ λ ≤ 1):
+    
+    FLOPS_StripedHyena = λ * FLOPS_Hyena-GLU + (1 − λ) * FLOPS_MHA-GLU
+    
+    The FLOP breakdown is as follows:
+
+    ## MHA GLU FLOP Calculations
+
+    - Embedding layers:  
+      4 * L * D * V
+
+    - MHA projections:  
+      6 * L * D²
+
+    - MHA attention:  
+      Instead of computing over a full L×L interaction, we assume
+      a fixed context. The updated cost is:
+      
+      4 * (layers) * D * ((context + 1) / 2) = 2 * (layers) * D * (context + 1)
+
+    - MHA output layer:  
+      2 * L * D²
+
+    - GLU:  
+      6 * L * D * D_glu
+
+    Summing these gives:
+
+      FLOPS_MHA-GLU = 4LDV + 6LDD_glu + 8LD² + 2 * (layers) * D * (context + 1)
+
+    ## Hyena-GLU FLOP Calculations
+
+    - Embedding + GLU (same as above):  
+      4 * L * D * V + 6 * L * D * D_glu
+
+    - Sequence Mixer – projections:  
+      6 * L * D²
+
+    - Sequence Mixer – convs on projections:  
+      18 * L * D
+
+    - Sequence Mixer – featurization:  
+      S_hyena * L * D⁹
+
+    - Sequence Mixer – convolution & gates:  
+      10 * L * log₂(L) * D + 4 * L * D
+
+    - Sequence Mixer – out layer:  
+      2 * L * D²
+
+    Combining these:
+      - The D² parts: 6LD² + 2LD² = 8LD².
+      - The LD parts: 18LD + 4LD + 10L·log₂(L)D = 22LD + 10L·log₂(L)D.
+
+    Thus, the total for Hyena-GLU is:
+    
+      FLOPS_Hyena-GLU = 4LDV + 6LDD_glu + 8LD² + (22LD + 10L·log₂(L)D) + S_hyena * L * D⁹
+    """
+
+    def __init__(self, vocab_size=256, S_hyena=1.0):
+        """
+        Initialize the StripedHyenaFLOPsCalculator.
+        
+        Args:
+            vocab_size (int): Vocabulary size (V) for embedding calculations.
+            S_hyena (float): Scaling constant for the Hyena featurization FLOPs.
+        """
+        self.vocab_size = vocab_size
+        self.S_hyena = S_hyena
+
+    def mha_glu_flops(self, L, layers, D, D_glu, V=None, context=None):
+        """
+        Calculate FLOPs for the MHA-GLU branch.
+        
+        Args:
+            L (int): The sequence length (or number of tokens).
+            layers (int): Number of layers (for the attention attention cost).
+            D (int): Model width.
+            D_glu (int): Internal dimension for GLU.
+            V (int): Vocabulary size. If None, uses the default.
+            context (int): Context length for attention. If None, defaults to L.
+            
+        Returns:
+            int: Estimated FLOPs for MHA-GLU.
+        """
+        if V is None:
+            V = self.vocab_size
+        if context is None:
+            context = L
+
+        # Embedding layers: 4 * L * D * V
+        embedding = 4 * L * D * V
+        
+        # MHA projections: 6 * L * D^2
+        projections = 6 * L * (D ** 2)
+        
+        # MHA attention (updated to fixed context cost):
+        # 4 * (layers) * D * ((context + 1)/2) = 2 * (layers) * D * (context + 1)
+        attention = 2 * layers * D * (context + 1)
+        
+        # MHA output layer: 2 * L * D^2
+        out_layer = 2 * L * (D ** 2)
+        
+        # GLU: 6 * L * D * D_glu
+        glu = 6 * L * D * D_glu
+        
+        # Sum the components:
+        # Note: projections + out_layer = (6 + 2) * L * D^2 = 8 * L * D^2
+        total = embedding + glu + (projections + out_layer) + attention
+        return total
+
+    def hyena_glu_flops(self, L, layers, D, D_glu, V=None):
+        """
+        Calculate FLOPs for the Hyena-GLU branch.
+        
+        Args:
+            L (int): The sequence length (or number of tokens).
+            layers (int): Number of layers.
+            D (int): Model width.
+            D_glu (int): Internal dimension for GLU.
+            V (int): Vocabulary size. If None, uses the default.
+            
+        Returns:
+            int: Estimated FLOPs for Hyena-GLU.
+        """
+        if V is None:
+            V = self.vocab_size
+
+        # Embedding + GLU (same as in MHA-GLU):
+        embed_glu = 4 * L * D * V + 6 * L * D * D_glu
+        
+        # Sequence Mixer – projections: 6 * L * D^2
+        mixer_proj = 6 * L * (D ** 2)
+        
+        # Sequence Mixer – convs on projections: 18 * L * D
+        mixer_convs = 18 * L * D
+        
+        # Sequence Mixer – featurization: S_hyena * L * D^9
+        mixer_feat = self.S_hyena * L * (D ** 9)
+        
+        # Sequence Mixer – convolution & gates: 10 * L * log₂(L) * D + 4 * L * D
+        mixer_conv_gates = 10 * L * math.log2(L) * D + 4 * L * D
+        
+        # Sequence Mixer – out layer: 2 * L * D^2
+        mixer_out = 2 * L * (D ** 2)
+        
+        # Combine the D^2 parts:
+        # mixer_proj + mixer_out = 6LD^2 + 2LD^2 = 8LD^2.
+        # LD parts: mixer_convs + mixer_conv_gates = 18LD + 4LD + 10L log₂(L)D.
+        total_mixer = mixer_proj + mixer_convs + mixer_feat + mixer_conv_gates + mixer_out
+        
+        total = embed_glu + total_mixer
+        return total
+
+    def striped_hyena_flops(self, lambda_val, L, layers, D, D_glu, V=None, context=None):
+        """
+        Calculate the total FLOPs for the Striped Hyena architecture.
+        The FLOPs are a weighted sum of the Hyena-GLU and MHA-GLU FLOPs.
+        
+        Args:
+            lambda_val (float): Mixing ratio for the Hyena branch (0 ≤ λ ≤ 1).
+            L (int): Sequence length (or number of tokens).
+            layers (int): Number of layers.
+            D (int): Model width.
+            D_glu (int): Internal dimension for GLU.
+            V (int): Vocabulary size. If None, uses the default.
+            context (int): Context length for attention. If None, defaults to L.
+            
+        Returns:
+            int: Estimated total FLOPs for Striped Hyena.
+        """
+        if V is None:
+            V = self.vocab_size
+        if context is None:
+            context = L
+
+        mha_glu = self.mha_glu_flops(L, layers, D, D_glu, V, context)
+        hyena_glu = self.hyena_glu_flops(L, layers, D, D_glu, V)
+        total = lambda_val * hyena_glu + (1 - lambda_val) * mha_glu
+        return total
