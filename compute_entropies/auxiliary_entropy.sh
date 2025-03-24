@@ -49,7 +49,7 @@ export PYTHONFAULTHANDLER=1
 
 
 # Run training
-stdbuf -oL -eL srun --exclusive python3 compute_entropies/test_GFM_performance.py \
+stdbuf -oL -eL srun --exclusive python3 compute_entropies/auxiliary_entropy.py \
     --master_addr $MASTER_ADDR \
     --master_port $MASTER_PORT \
     --backend nccl \
