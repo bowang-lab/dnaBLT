@@ -83,11 +83,11 @@ class LengthAwareDistributedBatchSampler(Sampler):
         self.shuffle = shuffle
         self.seed = seed
         self.segment_size = segment_size
-        self.rng = np.random.RandomState(seed)
 
         self.segments_per_doc = []
 
         # TOTAL_SEGMENT_FORMAT: (doc_id, start_idx, length)
+        random.seed(self.seed)
 
         for i, sample in enumerate(self.dataset):
             quotient, remainder = divmod(len(sample["text"]), self.segment_size)
