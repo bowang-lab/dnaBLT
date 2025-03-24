@@ -61,7 +61,7 @@ class LengthAwareDistributedBatchSampler(Sampler):
         num_replicas=None,
         rank=None,
         shuffle=False,
-        seed=None,
+        seed=42,
         segment_size=None,
     ):
         # NOTE: This should just return the indices of the segments. We'll need to define them all and then split them into batches and allocate to ranks.
