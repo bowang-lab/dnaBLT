@@ -5,6 +5,7 @@ import torch
 from torch.utils.data import DataLoader, Sampler, Dataset
 from torch.nn.utils.rnn import pad_sequence
 from datasets import load_dataset
+import pyarrow as pa
 
 MAX_LENGTH = 8192
 PAD_TOKEN = 1
@@ -199,17 +200,49 @@ def init_distributed_training(
         collate_fn=collate,
     )
 
+    try:
+        with pa.memory_map("test_sampler.arrow", "r") as source:
+            reader = pa.ipc.open_file(source)
+            # Get the last batch if any batches exist
+            num_processed_batches = reader.num_record_batches
+    except Exception as e:
+        raise e
+
+    print(num_processed_batches)
+    exit()
+
     # ---------------------------------------------------------------------
     # 3. Load model & wrap with DistributedDataParallel
     # ---------------------------------------------------------------------
     # ---------------------------------------------------------------------
     # Resume functionality - check if we need to resume from an existing file
     # ---------------------------------------------------------------------
-    for tokens, sample_ids, texts in iter(dataloader):
-        import IPython
-
-        IPython.embed()
-        break
+    entropy_field = pa.field("entropies", pa.list_(pa.float16()), nullable=False)
+    text_field = pa.field("text", pa.string(), nullable=False)
+    sample_id_field = pa.field("sample_id", pa.string(), nullable=False)
+    schema = pa.schema([sample_id_field, text_field, entropy_field])
+    flag_iter = 2
+    try:
+        with pa.OSFile("test_sampler.arrow", "wb") as sink:
+            with pa.ipc.new_file(sink, schema) as writer:
+                for tokens, sample_ids, texts in iter(dataloader):
+                    if flag_iter:
+                        batch = pa.record_batch(
+                            {
+                                "entropies": [
+                                    x for x in tokens.to(torch.float16).numpy()
+                                ],
+                                "sample_id": [x for x in sample_ids],
+                                "text": [x for x in texts],
+                            },
+                            schema,
+                        )
+                        writer.write_batch(batch)
+                        flag_iter -= 1
+                    else:
+                        break
+    except Exception as e:
+        raise e
 
 
 if __name__ == "__main__":

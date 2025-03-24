@@ -282,7 +282,7 @@ def init_distributed_training(
                             next(data_iter)
                         except StopIteration:
                             break
-                for tokens, sample_ids, texts in dataloader:
+                for tokens, sample_ids, texts in data_iter:
                     tokens = tokens.to(
                         dtype=torch.int, device=rank
                     )  # push tokens to GPU
