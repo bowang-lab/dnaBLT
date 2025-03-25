@@ -268,8 +268,6 @@ class StripedHyenaFLOPsCalculator:
 
     ## MHA GLU FLOP Calculations
 
-    - Embedding layers:  
-      4 * L * D * V
 
     - MHA projections:  
       6 * L * D²
@@ -288,12 +286,12 @@ class StripedHyenaFLOPsCalculator:
 
     Summing these gives:
 
-      FLOPS_MHA-GLU = 4LDV + 6LDD_glu + 8LD² + 2 * (layers) * D * (context + 1)
+      FLOPS_MHA-GLU = 6LDD_glu + 8LD² + 2 * (layers) * D * (context + 1)
 
     ## Hyena-GLU FLOP Calculations
 
-    - Embedding + GLU (same as above):  
-      4 * L * D * V + 6 * L * D * D_glu
+    - GLU (same as above):  
+      6 * L * D * D_glu
 
     - Sequence Mixer – projections:  
       6 * L * D²
@@ -316,7 +314,7 @@ class StripedHyenaFLOPsCalculator:
 
     Thus, the total for Hyena-GLU is:
     
-      FLOPS_Hyena-GLU = 4LDV + 6LDD_glu + 8LD² + (22LD + 10L·log₂(L)D) + S_hyena * L * D⁹
+      FLOPS_Hyena-GLU = 6LDD_glu + 8LD² + (22LD + 10L·log₂(L)D) + S_hyena * L * D⁹
     """
 
     def __init__(self, vocab_size=256, S_hyena=1.0):
@@ -351,7 +349,7 @@ class StripedHyenaFLOPsCalculator:
             context = L
 
         # Embedding layers: 4 * L * D * V
-        embedding = 4 * L * D * V
+        # embedding = 4 * L * D * V
         
         # MHA projections: 6 * L * D^2
         projections = 6 * L * (D ** 2)
@@ -368,7 +366,7 @@ class StripedHyenaFLOPsCalculator:
         
         # Sum the components:
         # Note: projections + out_layer = (6 + 2) * L * D^2 = 8 * L * D^2
-        total = embedding + glu + (projections + out_layer) + attention
+        total = glu + (projections + out_layer) + attention
         return total
 
     def hyena_glu_flops(self, L, layers, D, D_glu, V=None):
@@ -389,7 +387,7 @@ class StripedHyenaFLOPsCalculator:
             V = self.vocab_size
 
         # Embedding + GLU (same as in MHA-GLU):
-        embed_glu = 4 * L * D * V + 6 * L * D * D_glu
+        glu = 6 * L * D * D_glu
         
         # Sequence Mixer – projections: 6 * L * D^2
         mixer_proj = 6 * L * (D ** 2)
@@ -411,7 +409,7 @@ class StripedHyenaFLOPsCalculator:
         # LD parts: mixer_convs + mixer_conv_gates = 18LD + 4LD + 10L log₂(L)D.
         total_mixer = mixer_proj + mixer_convs + mixer_feat + mixer_conv_gates + mixer_out
         
-        total = embed_glu + total_mixer
+        total = glu + total_mixer
         return total
 
     def striped_hyena_flops(self, lambda_val, L, layers, D, D_glu, V=None, context=None):
