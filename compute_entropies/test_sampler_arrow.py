@@ -235,13 +235,13 @@ def init_distributed_training(
 
                     processed_tokens += batch_tokens
 
-                    if len(entropies_buffer) >= 16:
+                    if len(entropies_buffer) >= 128:
                         # Create pyarrow table
                         batch = pa.record_batch(
                             {
                                 "entropies": entropies_buffer,
                                 "text": text_buffer,
-                                "sample_id": sample_ids,
+                                "sample_id": sample_ids_buffer,
                             },
                             schema,
                         )
@@ -277,4 +277,4 @@ def init_distributed_training(
 
 
 if __name__ == "__main__":
-    init_distributed_training(rank=0, batch_size=16)
+    init_distributed_training(rank=0, batch_size=32)

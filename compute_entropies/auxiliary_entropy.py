@@ -244,7 +244,7 @@ def init_distributed_training(
     rank_output_file = f"entropies_rank{rank}.arrow"
 
     # Check if the output file exists to potentially resume
-    if os.path.exists(rank_output_file):
+    if os.path.exists(rank_output_file) and resume_mode:
         try:
             # Read the existing Arrow file to get the last batch
             with pa.memory_map(rank_output_file, "r") as source:
@@ -310,7 +310,7 @@ def init_distributed_training(
                             {
                                 "entropies": entropies_buffer,
                                 "text": text_buffer,
-                                "sample_id": sample_ids,
+                                "sample_id": sample_ids_buffer,
                             },
                             schema,
                         )
