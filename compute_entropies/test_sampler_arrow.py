@@ -6,6 +6,7 @@ from torch.utils.data import DataLoader, Sampler, Dataset
 from torch.nn.utils.rnn import pad_sequence
 from datasets import load_dataset
 import pyarrow as pa
+from tqdm import tqdm
 
 MAX_LENGTH = 8192
 PAD_TOKEN = 1
@@ -55,7 +56,7 @@ class LengthAwareDistributedBatchSampler(Sampler):
         num_replicas=None,
         rank=None,
         shuffle=False,
-        seed=None,
+        seed=42,
         segment_size=None,
     ):
         # NOTE: This should just return the indices of the segments. We'll need to define them all and then split them into batches and allocate to ranks.
@@ -67,13 +68,13 @@ class LengthAwareDistributedBatchSampler(Sampler):
         self.shuffle = shuffle
         self.seed = seed
         self.segment_size = segment_size
-        self.rng = np.random.RandomState(seed)
 
         self.segments_per_doc = []
 
         # TOTAL_SEGMENT_FORMAT: (doc_id, start_idx, length)
+        random.seed(self.seed)
 
-        for i, sample in enumerate(self.dataset):
+        for i, sample in enumerate(tqdm(self.dataset)):
             quotient, remainder = divmod(len(sample["text"]), self.segment_size)
             # [ACT][GAC][TGA][CT] when start = 0. [A][CTG][ACT][GAC][T] when start = 1. [AC][TGA][CTG][ACT] when start = 2.
             start = random.randint(0, remainder)
@@ -160,11 +161,16 @@ def calculate_entropies(tokens: torch.tensor, model: torch.nn.Module, device):
         seq_lengths = mask.sum(dim=1).tolist()
 
         # NOTE: StripedHyena2 seems to output some "inference_params_dict_out" object that we don't need.
-        outputs, _ = model(tokens)  # => [batch, MAX_LENGTH, vocab]
-        pred = outputs[0]
-        pred_entropies = entropy(pred).cpu().numpy()  # => [batch, seq_len]
-        mask_np = mask.cpu().numpy()
+        # outputs, _ = model(tokens)  # => [batch, MAX_LENGTH, vocab]
+        # pred = outputs[0]
+        # pred_entropies = (
+        #     entropy(pred).to(dtype=torch.float16, device="cpu").numpy()
+        # )  # => [batch, seq_len]
 
+        pred_entropies = torch.rand(
+            (tokens.shape[0], tokens.shape[1]), dtype=torch.float16, device=device
+        ).numpy()
+        mask_np = mask.cpu().numpy()
         valid_pred_entropies = pred_entropies[mask_np]
         split_indices = np.cumsum(seq_lengths)[:-1]
         nested_entropies = np.split(valid_pred_entropies, split_indices)
@@ -200,47 +206,72 @@ def init_distributed_training(
         collate_fn=collate,
     )
 
-    try:
-        with pa.memory_map("test_sampler.arrow", "r") as source:
-            reader = pa.ipc.open_file(source)
-            # Get the last batch if any batches exist
-            num_processed_batches = reader.num_record_batches
-    except Exception as e:
-        raise e
-
-    print(num_processed_batches)
-    exit()
-
     # ---------------------------------------------------------------------
     # 3. Load model & wrap with DistributedDataParallel
     # ---------------------------------------------------------------------
     # ---------------------------------------------------------------------
     # Resume functionality - check if we need to resume from an existing file
     # ---------------------------------------------------------------------
+    entropies_buffer = []
+    text_buffer = []
+    sample_ids_buffer = []
     entropy_field = pa.field("entropies", pa.list_(pa.float16()), nullable=False)
     text_field = pa.field("text", pa.string(), nullable=False)
     sample_id_field = pa.field("sample_id", pa.string(), nullable=False)
     schema = pa.schema([sample_id_field, text_field, entropy_field])
-    flag_iter = 2
+    processed_tokens = 0
     try:
-        with pa.OSFile("test_sampler.arrow", "wb") as sink:
+        with pa.OSFile("test_inference.arrow", "wb") as sink:
             with pa.ipc.new_file(sink, schema) as writer:
-                for tokens, sample_ids, texts in iter(dataloader):
-                    if flag_iter:
+                data_iter = iter(dataloader)
+                for tokens, sample_ids, texts in data_iter:
+                    tokens = tokens.to(dtype=torch.int, device="cpu")
+                    scores, batch_tokens = calculate_entropies(
+                        tokens, None, device="cpu"
+                    )
+                    entropies_buffer.extend(scores)
+                    text_buffer.extend(texts)
+                    sample_ids_buffer.extend(sample_ids)
+
+                    processed_tokens += batch_tokens
+
+                    if len(entropies_buffer) >= 16:
+                        # Create pyarrow table
                         batch = pa.record_batch(
                             {
-                                "entropies": [
-                                    x for x in tokens.to(torch.float16).numpy()
-                                ],
-                                "sample_id": [x for x in sample_ids],
-                                "text": [x for x in texts],
+                                "entropies": entropies_buffer,
+                                "text": text_buffer,
+                                "sample_id": sample_ids,
                             },
                             schema,
                         )
+
+                        # Use 'ab' (append binary) mode for file operations
+                        # For the first write, this is same as 'wb', for subsequent writes it appends
+
                         writer.write_batch(batch)
-                        flag_iter -= 1
-                    else:
-                        break
+
+                        entropies_buffer = []
+                        text_buffer = []
+                        sample_ids_buffer = []
+
+                        if processed_tokens >= 4e10:
+                            break
+
+                if len(entropies_buffer) > 0:
+                    batch = pa.record_batch(
+                        {
+                            "entropies": entropies_buffer,
+                            "text": text_buffer,
+                            "sample_id": sample_ids_buffer,
+                        },
+                        schema,
+                    )
+                    writer.write_batch(batch)
+
+                    entropies_buffer = []
+                    text_buffer = []
+                    sample_ids_buffer = []
     except Exception as e:
         raise e
 

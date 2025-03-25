@@ -178,7 +178,9 @@ def calculate_entropies(tokens: torch.tensor, model: torch.nn.Module, device):
         # NOTE: StripedHyena2 seems to output some "inference_params_dict_out" object that we don't need.
         outputs, _ = model(tokens)  # => [batch, MAX_LENGTH, vocab]
         pred = outputs[0]
-        pred_entropies = entropy(pred).cpu().numpy()  # => [batch, seq_len]
+        pred_entropies = (
+            entropy(pred).to(dtype=torch.float16, device="cpu").numpy()
+        )  # => [batch, seq_len]
         mask_np = mask.cpu().numpy()
 
         valid_pred_entropies = pred_entropies[mask_np]
