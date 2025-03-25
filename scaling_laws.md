@@ -13,8 +13,9 @@ Recall: $\text{FLOPS}_{\text{StripedHyena}} = \lambda\;\text{FLOPS}_{\text{Hyena
   $$6LD^2$$
 
 - **MHA attention:**  
-  $$4L^2D + 2H L^2$$  
-  $$= 2L^2(2D+H)
+  Rather than computing over a full $L \times L$ interaction matrix, we now assume that each layer’s attention is computed over a fixed context. The updated attention FLOP cost is: \\
+
+  $4 \times \text{(layers)} \times D \times \frac{(L+1)}{2} = 2 \times \text{(layers)} \times D \times (L+1).$
 
 - **MHA out layer:**  
   $$2LD^2$$
@@ -25,13 +26,13 @@ Recall: $\text{FLOPS}_{\text{StripedHyena}} = \lambda\;\text{FLOPS}_{\text{Hyena
 *Summing the MHA‐GLU parts gives:*
 
 $$
-\text{FLOPS}_{\text{MHA-GLU}} = 4LDV + 6LD\,D_{\text{glu}} + (6LD^2 + 2LD^2) + 2L^2(2D+H)
+\text{FLOPS}_{\text{MHA-GLU}} = 4LDV + 6LD\,D_{\text{glu}} + (6LD^2 + 2LD^2) + 2 \times \text{(layers)} \times D \times (L+1)
 $$
 
 or, after combining the \(D^2\) terms:
 
 $$
-\text{FLOPS}_{\text{MHA-GLU}} = 4LDV + 6LD\,D_{\text{glu}} + 8LD^2 + 2L^2(2D+H).
+\text{FLOPS}_{\text{MHA-GLU}} = 4LDV + 6LD\,D_{\text{glu}} + 8LD^2 + 2 \times \text{(layers)} \times D \times (L+1).
 $$
 
 In the paper, they mention the MHA-GLU FLOPs calculations come from the Transformer++ section in the paper.
@@ -79,7 +80,7 @@ Using the mixing ratio $\lambda$ for the Hyena branch (and $1-\lambda$ for the M
 $$
 \begin{aligned}
 \text{FLOPS}_{\text{StripedHyena}} = \; & \lambda\Bigl[4LDV + 6LD D_{\text{glu}} + 8LD^2 + 22LD + 10L\log_2(L)D + \text{Shyena} LD^9\Bigr] \\
-& + (1-\lambda)\Bigl[4LDV + 6LD\,D_{\text{glu}} + 8LD^2 + 2L^2(2D+H)\Bigr].
+& + (1-\lambda)\Bigl[4LDV + 6LD\,D_{\text{glu}} + 8LD^2 + 2 \times \text{(layers)} \times D \times (L+1)\Bigr].
 \end{aligned}
 $$
 

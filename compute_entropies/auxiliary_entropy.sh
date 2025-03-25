@@ -49,7 +49,7 @@ export PYTHONFAULTHANDLER=1
 
 
 # Run training
-stdbuf -oL -eL srun --exclusive python3 compute_entropies/test_GFM_performance.py \
+stdbuf -oL -eL srun --exclusive python3 compute_entropies/auxiliary_entropy.py \
     --master_addr $MASTER_ADDR \
     --master_port $MASTER_PORT \
     --backend nccl \
@@ -60,3 +60,4 @@ stdbuf -oL -eL srun --exclusive python3 compute_entropies/test_GFM_performance.p
     --split validation \
     --batch_size 16 \
     --arrow_batch 16 \
+    --num_tokens 40000000000 \
