@@ -395,8 +395,8 @@ class StripedHyenaFLOPsCalculator:
         # Sequence Mixer – convs on projections: 18 * L * D
         mixer_convs = 18 * L * D
         
-        # Sequence Mixer – featurization: S_hyena * L * D^9
-        mixer_feat = self.S_hyena * L * (D ** 9)
+        # Sequence Mixer – featurization: S_hyena * L * D
+        mixer_feat = self.S_hyena * L * (D)
         
         # Sequence Mixer – convolution & gates: 10 * L * log₂(L) * D + 4 * L * D
         mixer_conv_gates = 10 * L * math.log2(L) * D + 4 * L * D

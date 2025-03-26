@@ -48,7 +48,7 @@ Here the embedding and GLU parts are the same as for Transformer++ and the “Se
   $$18LD$$
 
 - **Sequence Mixer – featurization:**  
-  $$S_{hyena} LD^9$$  
+  $$S_{hyena} LD$$  
 
 - **Sequence Mixer – convolution & gates:**  
   $$10L \log_2(L) D + 4LD$$
@@ -67,7 +67,7 @@ Here the embedding and GLU parts are the same as for Transformer++ and the “Se
 Thus, the total for Hyena‐GLU is:
 
 $$
-\text{FLOPS}_{\text{Hyena-GLU}} = 6LD D_{\text{glu}} + 8LD^2 + \bigl(22LD + 10L\log_2(L)D\bigr) + \text{Shyena} LD^9.
+\text{FLOPS}_{\text{Hyena-GLU}} = 6LD D_{\text{glu}} + 8LD^2 + \bigl(22LD + 10L\log_2(L)D\bigr) + \text{Shyena} LD.
 $$
 
 ## Final Calculation
@@ -76,7 +76,7 @@ Using the mixing ratio $\lambda$ for the Hyena branch (and $1-\lambda$ for the M
 
 $$
 \begin{aligned}
-\text{FLOPS}_{\text{StripedHyena}} = \; & \lambda\Bigl[6LD D_{\text{glu}} + 8LD^2 + \bigl(22LD + 10L\log_2(L)D\bigr) + \text{Shyena} LD^9\Bigr] \\
+\text{FLOPS}_{\text{StripedHyena}} = \; & \lambda\Bigl[6LD D_{\text{glu}} + 8LD^2 + \bigl(22LD + 10L\log_2(L)D\bigr) + \text{Shyena} LD\Bigr] \\
 & + (1-\lambda)\Bigl[6LD\,D_{\text{glu}} + 8LD^2 + 2 \times \text{(layers)} \times D \times (L+1)\Bigr].
 \end{aligned}
 $$
