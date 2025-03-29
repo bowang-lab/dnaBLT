@@ -1,6 +1,23 @@
 import pandas as pd
 import math
 
+
+def total_parameters(
+    layers, hidden_state, transformer: bool, feed_forward_multiplier=4
+):
+    """Calculate total parameters for a transformer model"""
+    if transformer:
+        return (
+            4 * hidden_state**2 + 2 * hidden_state**2 * feed_forward_multiplier
+        ) * layers
+    else:
+        return (layers // 10) * (
+            4 * hidden_state**2 + 2 * hidden_state**2 * feed_forward_multiplier
+        ) + (layers - layers // 10) * (
+            4 * hidden_state**2 + 3 * hidden_state**2 * feed_forward_multiplier
+        )
+
+
 def glu_flops(layers, hidden_state, feed_forward_mult=4):
     """Calculate FLOPs for feed forward networks
 
@@ -111,7 +128,7 @@ class BLTFLOPsCalculator:
             )
             / patch_size
             + self.encoder_model(
-                hidden_state_e, layers_e, window_e, 0, feed_forward_mult 
+                hidden_state_e, layers_e, window_e, 0, feed_forward_mult
             )
             + self.decoder_model(
                 hidden_state_d, layers_d, window_d, vocab, feed_forward_mult
@@ -176,22 +193,14 @@ class ExperimentGeneration:
     def __init__(self, blt_flops_calculator: BLTFLOPsCalculator):
         self.blt_flops_calculator = blt_flops_calculator
 
-    def total_parameters(self, layers, hidden_state, transformer, feed_forward_multiplier=4):
-        """Calculate total parameters for a transformer model"""
-        if transformer:
-            return (4 * hidden_state ** 2 + 2 * hidden_state ** 2 * feed_forward_multiplier) * layers
-        else:
-            return (layers // 10) * (4 * hidden_state ** 2 + 2 * hidden_state ** 2 * feed_forward_multiplier) + (layers - layers // 10) * (4 * hidden_state ** 2 + 3 * hidden_state ** 2 * feed_forward_multiplier)
-
     def run_scaling_experiments(
         self,
-        flop_budgets,
-        token_ranges,
         patch_sizes,
         decoder_layers,
         n_heads_e,
         global_layers,
         n_heads_g,
+        feed_forward_mult,
     ):
         # ratio exceeds 2 only 2B and above
         """
@@ -210,10 +219,18 @@ class ExperimentGeneration:
         """
 
         flop_budget_map = {
-            "s": flop_budgets[0],
-            "m": flop_budgets[1],
-            "l": flop_budgets[2],
-            "xl": flop_budgets[3],
+            "s": 8e18,
+            "m": 2e19,
+            "l": 4e19,
+            "xl": 8e19,
+        }
+
+        parameter_ranges = {
+            # taken from Evo isoflop parabolas for StripedHyena
+            "s": (2e7, 1.2e8),
+            "m": (4e7, 2e8),
+            "l": (4e7, 5e8),
+            "xl": (4e7, 1e9),
         }
 
         values = []
@@ -223,64 +240,87 @@ class ExperimentGeneration:
                 for gl in global_layers:
                     for eh in n_heads_e:
                         for gh in n_heads_g:
-                                forward_flops = (
-                                    self.blt_flops_calculator.forward_blt_flops(
-                                        seq_len=8192,
-                                        patch_size=p,
-                                        hidden_state_g=gh * 128,
-                                        layers_g=gl,
-                                        hidden_state_e=eh * 64,
-                                        layers_e=1,
-                                        window_e=512,
-                                        hidden_state_d=eh * 64,
-                                        layers_d=dl,
-                                        window_d=512,
-                                        ratio_patchdim2bytedim=2,
-                                        feed_forward_mult=4,
-                                    )
-                                )
+                            forward_flops = self.blt_flops_calculator.forward_blt_flops(
+                                seq_len=8192,
+                                patch_size=p,
+                                hidden_state_g=gh * 64,
+                                layers_g=gl,
+                                hidden_state_e=eh * 64,
+                                layers_e=1,
+                                window_e=512,
+                                hidden_state_d=eh * 64,
+                                layers_d=dl,
+                                window_d=512,
+                                ratio_patchdim2bytedim=2,
+                                feed_forward_mult=feed_forward_mult,
+                                vocab=4,
+                            )
 
-                                # Calculate tokens for each FLOP budget
-                                for budget_name, flop_budget in flop_budget_map.items():
-                                    tokens = flop_budget / (3 * forward_flops)
-                                    min_tokens, max_tokens = token_ranges[budget_name]
+                            global_params = total_parameters(
+                                gl,
+                                gh * 64,
+                                transformer=False,
+                                feed_forward_multiplier=feed_forward_mult,
+                            )
 
-                                    if min_tokens <= tokens <= max_tokens:
-                                        values.append(
-                                            (
-                                                budget_name,
-                                                p,
-                                                tokens,
-                                                self.total_parameters(
-                                                    1, eh * 64
-                                                ),
-                                                self.total_parameters(
-                                                    gl, gh * 128, self.blt_flops_calculator.global_model == transformer_flops
-                                                ),
-                                                self.total_parameters(
-                                                    dl, eh * 64
-                                                ),
-                                                gh * 128,
-                                                eh * 64,
-                                                gl,
-                                                dl,
-                                            )
+                            encoder_params = total_parameters(
+                                1,
+                                eh * 64,
+                                transformer=True,
+                                feed_forward_multiplier=feed_forward_mult,
+                            )
+
+                            decoder_params = total_parameters(
+                                dl,
+                                eh * 64,
+                                transformer=True,
+                                feed_forward_multiplier=feed_forward_mult,
+                            )
+
+                            if (decoder_params < global_params * 0.08) or (decoder_params > global_params * 0.12):
+                                continue
+
+                            # Calculate tokens for each FLOP budget
+                            for budget_name, flop_budget in flop_budget_map.items():
+                                tokens = flop_budget / (3 * forward_flops)
+                                min_parameters, max_parameters = parameter_ranges[
+                                    budget_name
+                                ]
+                                if (
+                                    min_parameters
+                                    <= global_params + encoder_params + decoder_params
+                                    <= max_parameters * p
+                                ):
+                                    values.append(
+                                        (
+                                            budget_name,
+                                            p,
+                                            tokens,
+                                            encoder_params,
+                                            global_params,
+                                            decoder_params,
+                                            gh * 64,
+                                            eh * 64,
+                                            gl,
+                                            dl,
                                         )
+                                    )
 
         # Create DataFrame from results
         return values
 
     def run_default_experiment(self):
         """Run a default experiment with predefined parameters"""
-        flop_budgets = [4e18, 8e18, 2e19, 4e19]
-        token_ranges = {
-            "s": (4e9, 7e10),
-            "m": (6.66e9, 1.33e11),
-            "l": (1.3e10, 6.66e11),
-            "xl": (1.3e10, 6.66e11),
-        }
+        global_layers = list(range(4, 16 + 1))
+        decoder_layers = list(map(lambda x: x // 3.5, global_layers))
+        n_heads_g = list(range(2, 12 + 1))
+        n_heads_e = list(range(2, 12 + 1))
 
-        values = self.run_scaling_experiments(flop_budgets, token_ranges)
+        # 64 * head = model_dim (stripedhyena)
+
+        values = self.run_scaling_experiments(
+            [1.5, 2, 4], decoder_layers, n_heads_e, global_layers, n_heads_g, 2.67
+        )
         columns = [
             "FLOPs",
             "Patch size",
@@ -296,7 +336,10 @@ class ExperimentGeneration:
         df = pd.DataFrame.from_records(values, columns=columns)
         df.to_csv("Compute_allocations2.csv", index=False)
 
+
 if __name__ == "__main__":
-    blt_flops_calculator = BLTFLOPsCalculator(striped_hyena_flops, transformer_flops, transformer_flops)
+    blt_flops_calculator = BLTFLOPsCalculator(
+        striped_hyena_flops, transformer_flops, transformer_flops
+    )
     experiment_generation = ExperimentGeneration(blt_flops_calculator)
     experiment_generation.run_default_experiment()

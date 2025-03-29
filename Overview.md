@@ -80,3 +80,13 @@ Using the derived sequence-to-token FLOPs converter,
 *(or as a shorthand with 99% lowerbound accuracy: $2.68 \times 3 \times h \times l \times (\log_2(m) + h)$)*
 
 - GLU: $6 \times l \times h \times d_{ff}h$
+
+## Sample uniformly from isloflop parabolas
+
+How should we choose the initial range of our set of scaling experiments?
+
+The Evo paper shows a parabola of values they assessed, with the optima being located roughly in the middle. Naively, if we simply wanted to reproduce those scaling results, we'd just need to assess those exact parameter vs token allocations.
+
+What does the byte latent formulation change? Larger patches decrease the number of tokens. Given a fixed compute budget, if we ran any of their experiments using the same model size, we'd just have vastly more tokens than they trained on.
+
+So let's compare runs with model sizes (compared to their experiments) [smallest_size, largest_size * patch_size] (it has been determined that proportionally increasing params leads to proportional increases in FLOPs). This way we'll be able to sample across having patch_size x max_tokens, to min_tokens.
