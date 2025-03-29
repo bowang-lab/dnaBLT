@@ -9,9 +9,9 @@ def glu_flops(layers, hidden_state, feed_forward_mult=4):
     return 3 * layers * 2 * hidden_state * feed_forward_mult * hidden_state
 
 
-def qkvo_flops(layers, hidden_state):
+def qkvo_flops(layers, hidden_state, r):
     """Calculate FLOPs for query, key, value, and output projections"""
-    return 8 * layers * hidden_state**2
+    return (r * 2 + 2) * 2 * layers * hidden_state**2
 
 
 def attention_flops(layers, hidden_state, context):
@@ -41,7 +41,7 @@ def transformer_flops(hidden_state, layers, context, vocab=None, feed_forward_mu
 
     return (
         glu_flops(layers, hidden_state, feed_forward_mult)
-        + qkvo_flops(layers, hidden_state)
+        + qkvo_flops(layers, hidden_state, 1)
         + attention_flops(layers, hidden_state, context)
         + deembedding_flops(hidden_state, vocab)
     )
@@ -60,10 +60,10 @@ def striped_hyena_flops(D, layers, context, vocab, glu_mult=4, hyena_ratio=10):
     mha_glu = (
         attention_flops(mha_glu_layers, D, context)
         + glu_flops(mha_glu_layers, D, glu_mult)
-        + qkvo_flops(mha_glu_layers, D)
+        + qkvo_flops(mha_glu_layers, D, 1)
     )
     hyena_glu = (
-        qkvo_flops(hyena_layers, D)
+        qkvo_flops(hyena_layers, D, 1)
         + convolutions_gates_flops(hyena_layers, D, context)
         + projection_convs_flops(hyena_layers, D)
         + featurization_flops(hyena_layers, D)
@@ -97,8 +97,8 @@ class BLTFLOPsCalculator:
         layers_d,
         window_d,
         ratio_patchdim2bytedim,
+        feed_forward_mult,
         vocab=None,
-        feed_forward_mult=None,
     ):
         """Calculate forward pass FLOPs for a BLT model"""
         return (
@@ -145,9 +145,6 @@ class BLTFLOPsCalculator:
         layers_d,
         window_d,
         ratio_patchdim2bytedim,
-        n_heads_e,
-        n_heads_g,
-        n_heads_d,
         vocab=None,
         feed_forward_mult=None,
     ):
@@ -165,9 +162,6 @@ class BLTFLOPsCalculator:
             layers_d,
             window_d,
             ratio_patchdim2bytedim,
-            n_heads_e,
-            n_heads_g,
-            n_heads_d,
             vocab,
             feed_forward_mult,
         )
@@ -179,12 +173,15 @@ class ExperimentGeneration:
     A class for generating experiments for the BLT and Striped Hyena architectures.
     """
 
-    def __init__(self, blt_flops_calculator):
+    def __init__(self, blt_flops_calculator: BLTFLOPsCalculator):
         self.blt_flops_calculator = blt_flops_calculator
 
-    def transformer_total_parameters(self, layers, hidden_state, feed_forward_multiplier=4):
+    def total_parameters(self, layers, hidden_state, transformer, feed_forward_multiplier=4):
         """Calculate total parameters for a transformer model"""
-        return 2 * hidden_state * layers * (2 * hidden_state + hidden_state * feed_forward_multiplier)
+        if transformer:
+            return (4 * hidden_state ** 2 + 2 * hidden_state ** 2 * feed_forward_multiplier) * layers
+        else:
+            return (layers // 10) * (4 * hidden_state ** 2 + 2 * hidden_state ** 2 * feed_forward_multiplier) + (layers - layers // 10) * (4 * hidden_state ** 2 + 3 * hidden_state ** 2 * feed_forward_multiplier)
 
     def run_scaling_experiments(
         self,
@@ -211,10 +208,6 @@ class ExperimentGeneration:
         Returns:
             pandas.DataFrame: Results of scaling experiments
         """
-        seq_len = 8192
-        window_e = 512
-        window_d = 512
-        ratio_patchdim2bytedim = 2
 
         flop_budget_map = {
             "s": flop_budgets[0],
@@ -230,23 +223,20 @@ class ExperimentGeneration:
                 for gl in global_layers:
                     for eh in n_heads_e:
                         for gh in n_heads_g:
-                            # Check if encoder parameters are at most 1% of global transformer parameters
                                 forward_flops = (
                                     self.blt_flops_calculator.forward_blt_flops(
-                                        seq_len=seq_len,
+                                        seq_len=8192,
                                         patch_size=p,
                                         hidden_state_g=gh * 128,
                                         layers_g=gl,
                                         hidden_state_e=eh * 64,
                                         layers_e=1,
-                                        window_e=window_e,
+                                        window_e=512,
                                         hidden_state_d=eh * 64,
                                         layers_d=dl,
-                                        window_d=window_d,
-                                        ratio_patchdim2bytedim=ratio_patchdim2bytedim,
-                                        n_heads_e=eh,
-                                        n_heads_g=gh,
-                                        n_heads_d=eh,
+                                        window_d=512,
+                                        ratio_patchdim2bytedim=2,
+                                        feed_forward_mult=4,
                                     )
                                 )
 
@@ -261,13 +251,13 @@ class ExperimentGeneration:
                                                 budget_name,
                                                 p,
                                                 tokens,
-                                                self.transformer_total_parameters(
+                                                self.total_parameters(
                                                     1, eh * 64
                                                 ),
-                                                self.transformer_total_parameters(
-                                                    gl, gh * 128
+                                                self.total_parameters(
+                                                    gl, gh * 128, self.blt_flops_calculator.global_model == transformer_flops
                                                 ),
-                                                self.transformer_total_parameters(
+                                                self.total_parameters(
                                                     dl, eh * 64
                                                 ),
                                                 gh * 128,
@@ -296,12 +286,17 @@ class ExperimentGeneration:
             "Patch size",
             "Tokens",
             "Encoder parameters",
-            "Global transformer parameters",
+            "Global model parameters",
             "Decoder parameters",
-            "Global transformer dimension",
+            "Global model dimension",
             "Encoder/Decoder dimension",
-            "Global transformer layers",
+            "Global model layers",
             "Decoder layers",
         ]
         df = pd.DataFrame.from_records(values, columns=columns)
-        df.to_csv("Compute_allocations.csv", index=False)
+        df.to_csv("Compute_allocations2.csv", index=False)
+
+if __name__ == "__main__":
+    blt_flops_calculator = BLTFLOPsCalculator(striped_hyena_flops, transformer_flops, transformer_flops)
+    experiment_generation = ExperimentGeneration(blt_flops_calculator)
+    experiment_generation.run_default_experiment()
