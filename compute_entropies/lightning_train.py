@@ -6,34 +6,29 @@ from torch.utils.data import IterableDataset, DataLoader
 import numpy as np
 import random
 from dataclasses import dataclass, field
+from bytelatent.data.iterators.arrow_iterator import ArrowFileIterator
 
 ###############################################
 # this is our top down approach, the following methods of course need to be updated, but this is a good first step
 ###############################################
 
-# --- TODO: IMPLEMENT ---
 class SimpleTokenizer:
-    def __init__(self, vocab: dict):
-        self.vocab = vocab
-        self.inv_vocab = {v: k for k, v in vocab.items()}
-        self.n_words = len(vocab)
-        self.unk_token = 0  # unknown token id
+    def __init__(self):
+        self.n_words = 4 # ACTG
+        self.unk_token = 78  # unknown token id = "N"
+        # Hyperefficient implementation of StripedHyena Char Tokenizer
 
     def encode(self, text: str) -> list:
-
-        tokens = [self.vocab.get(char, self.unk_token) for char in text]
-        return tokens
+        return list(text.encode("utf-8"))
 
     def decode(self, tokens: list) -> str:
-        return "".join([self.inv_vocab.get(token, "?") for token in tokens])
+        return bytes(tokens).decode("utf-8")
 
 # this of course, needs to be changed
 @dataclass
 class TokenizerArgs: 
     def build(self) -> SimpleTokenizer:
-
-        vocab = {chr(i): i for i in range(32, 127)}
-        return SimpleTokenizer(vocab)
+        return SimpleTokenizer()
 
 
 # --- TODO: need to implement this correctly ofc ---
@@ -92,10 +87,9 @@ class SimplePreprocessIterator:
     It takes a list of raw texts, tokenizes them using the provided tokenizer,
     pads/truncates to a fixed sequence length, and applies patching.
     """
-    def __init__(self, texts: list, seq_len: int, tokenizer_args: TokenizerArgs = None, patcher_args: PatcherArgs = None):
-        self.texts = texts
+    def __init__(self, arrow_iterator: ArrowFileIterator, seq_len: int, tokenizer_args: TokenizerArgs = None, patcher_args: PatcherArgs = None):
+        self.arrow_iterator = arrow_iterator
         self.seq_len = seq_len
-        self.current = 0
         # Build tokenizer; use default if not provided.
         if tokenizer_args is None:
             tokenizer_args = TokenizerArgs()
@@ -105,43 +99,21 @@ class SimplePreprocessIterator:
             patcher_args = PatcherArgs()
         self.patcher = patcher_args.build()
 
-    def __iter__(self):
-        self.current = 0
-        return self
-
-    def __next__(self):
-        if self.current >= len(self.texts):
-            raise StopIteration
-        text = self.texts[self.current]
-        sample_id = self.current
-        tokens = self.tokenizer.encode(text)
-
-        if len(tokens) < self.seq_len:
-            tokens = tokens + [0] * (self.seq_len - len(tokens))
-            mask = [True] * self.seq_len
-        else:
-            tokens = tokens[:self.seq_len]
-            mask = [True] * self.seq_len
-        #  patching: convert tokens to a tensor and get patch lengths.
-        tokens_tensor = torch.tensor([tokens], dtype=torch.long)  # shape [1, seq_len]
-        patch_lengths_tensor = self.patcher.patch(tokens_tensor)
-        patch_lengths = patch_lengths_tensor[0].tolist()
-        example = BltExample(
-            sample_id=sample_id,
-            text=text,
-            tokens=tokens,
-            mask=mask,
-            patch_lengths=patch_lengths
-        )
-        self.current += 1
-        return example
-
-    def get_state(self):
-        # compatibility with our LightningIterableDataset, we return self.
-        return self
-
     def create_iter(self):
-        return iter(self)
+        example_iter = self.arrow_iterator.create_iter()
+        for example in example_iter:
+            text = example.text
+            tokens = self.tokenizer.encode(text) # or just example.tokens
+            entropies = torch.tensor(example.entropies).unsqueeze(0)
+            patch_lengths = self.patcher.patch(torch.tensor(tokens).unsqueeze(0), entropies=entropies, include_next_token=False)[0][0].tolist()
+            yield BltExample(
+                sample_id=example.sample_id,
+                text=text,
+                tokens=tokens,
+                mask=[True] * len(tokens),
+                patch_lengths=patch_lengths,
+                entropies=example.entropies
+            )
 
 
 # this is the iterator, also needs to be implemented
