@@ -220,9 +220,9 @@ class ExperimentGeneration:
 
         flop_budget_map = {
             "s": 8e18,
-            "m": 2e19,
-            "l": 4e19,
-            "xl": 8e19,
+            # "m": 2e19,
+            # "l": 4e19,
+            # "xl": 8e19,
         }
 
         parameter_ranges = {
@@ -280,6 +280,9 @@ class ExperimentGeneration:
                             if (decoder_params < global_params * 0.08) or (decoder_params > global_params * 0.12):
                                 continue
 
+                            if dl < (gl * 0.2):
+                                continue
+
                             # Calculate tokens for each FLOP budget
                             for budget_name, flop_budget in flop_budget_map.items():
                                 tokens = flop_budget / (3 * forward_flops)
@@ -311,10 +314,10 @@ class ExperimentGeneration:
 
     def run_default_experiment(self):
         """Run a default experiment with predefined parameters"""
-        global_layers = list(range(4, 16 + 1))
+        global_layers = list(range(4, 24 + 1))
         decoder_layers = list(map(lambda x: x // 3.5, global_layers))
-        n_heads_g = list(range(2, 12 + 1))
-        n_heads_e = list(range(2, 12 + 1))
+        n_heads_g = list(range(2, 20 + 1))
+        n_heads_e = list(range(2, 20 + 1))
 
         # 64 * head = model_dim (stripedhyena)
 
@@ -333,7 +336,7 @@ class ExperimentGeneration:
             "Global model layers",
             "Decoder layers",
         ]
-        df = pd.DataFrame.from_records(values, columns=columns)
+        df = pd.DataFrame.from_records(values, columns=columns).drop_duplicates()
         df.to_csv("Compute_allocations2.csv", index=False)
 
 
