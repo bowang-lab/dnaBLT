@@ -12,7 +12,7 @@ from bytelatent.data.iterators.arrow_iterator import ArrowFileIterator
 # this is our top down approach, the following methods of course need to be updated, but this is a good first step
 ###############################################
 
-class SimpleTokenizer:
+class SimpleTokenizer: # DONE
     def __init__(self):
         self.n_words = 4 # ACTG
         self.unk_token = 78  # unknown token id = "N"
@@ -24,7 +24,7 @@ class SimpleTokenizer:
     def decode(self, tokens: list) -> str:
         return bytes(tokens).decode("utf-8")
 
-# this of course, needs to be changed
+
 @dataclass
 class TokenizerArgs: 
     def build(self) -> SimpleTokenizer:
