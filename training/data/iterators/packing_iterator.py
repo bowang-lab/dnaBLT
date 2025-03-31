@@ -2,6 +2,7 @@
 from enum import Enum
 from typing import Any, Generator, List, Optional
 from pydantic import BaseModel
+from sequence_iterator import SequenceIterator
 
 import numpy as np
 
@@ -195,6 +196,7 @@ class PackingIterator:
     def __init__(
         self,
         sequences: List[BltSequence],
+        sequence_iterator: SequenceIterator,
         packing_args: PackingArgs,
     ):
         """
@@ -204,6 +206,7 @@ class PackingIterator:
             sequences: List of sequences to be packed
             packing_args: Configuration for packing
         """
+        self.sequence_iterator = sequence_iterator
         self.sequences = sequences
         self.packing_args = packing_args
         self.current_idx = 0
@@ -226,34 +229,31 @@ class PackingIterator:
     """
 
     def _create_iter_from_bytes(self):
+        sequence_iter = self.sequence_iterator.create_iter()
         batch_size = self.packing_args.batch_size
         pad_id = self.packing_args.pad_id
         seq_len = self.packing_args.seq_len
         
-        while self.current_idx < len(self.sequences):
+        while True:
             tokens: List[List[int]] = []
             masks: List[List[bool]] = []
-            
+            stop_iteration = False
+            try:
             # Collect sequences for the batch
-            for _ in range(batch_size):
-                if self.current_idx >= len(self.sequences):
-                    break
-                
-                sequence = self.sequences[self.current_idx]
-                self.current_idx += 1
-                
-                _tokens = sequence.tokens
-                _mask = sequence.mask
-                assert (
-                    sequence.patch_lengths is None
-                ), "patch_lengths should not be used in byte packing"
-                
-                tokens.append(_tokens)
-                masks.append(_mask)
-            
-            # If we couldn't collect any sequences, we're done
-            if not tokens:
-                break
+                for _ in range(batch_size):
+                    sequence = next(sequence_iter)
+        
+                    
+                    _tokens = sequence.tokens
+                    _mask = sequence.mask
+                    assert (
+                        sequence.patch_lengths is None
+                    ), "patch_lengths should not be used in byte packing"
+                    
+                    tokens.append(_tokens)
+                    masks.append(_mask)
+            except StopIteration:
+                stop_iteration = True
                 
             # Create batch arrays with appropriate padding
             x = np.full((batch_size, seq_len), fill_value=pad_id)
@@ -272,7 +272,11 @@ class PackingIterator:
             
             yield batch
 
+            if stop_iteration:
+                break
+
     def _create_iter_from_patch_lengths(self):
+        sequence_iter = self.sequence_iterator.create_iter()
         batch_size = self.packing_args.batch_size
         pad_id = self.packing_args.pad_id
         seq_len = self.packing_args.seq_len
@@ -281,45 +285,43 @@ class PackingIterator:
         max_length = self.packing_args.max_length
         assert max_length is not None, "max_length must be provided for patch-based packing"
         
-        while self.current_idx < len(self.sequences):
+        while True:
             tokens: List[List[int]] = []
             masks: List[List[bool]] = []
-            patch_lengths: List[List[int]] = []
-            
+            patch_lengths = list[list[int]] = []
+            stop_iteration = False
+            try:
             # Collect sequences for the batch
-            for _ in range(batch_size):
-                if self.current_idx >= len(self.sequences):
-                    break
+                for _ in range(batch_size):
+                    sequence = next(sequence_iter)
                     
-                sequence = self.sequences[self.current_idx]
-                self.current_idx += 1
-                
-                _tokens = sequence.tokens
-                _mask = sequence.mask
-                _patch_lengths = sequence.patch_lengths
-                
-                assert (
-                    _patch_lengths is not None
-                ), "patch lengths are required for packing based on patches."
-                
-                # Reminder: seq_len is in terms of patches
-                assert len(sequence.patch_lengths) == seq_len
-                
-                # Process patches
-                last_patch_length = 0
-                if _patch_lengths[0] > 1:
-                    last_patch_length = _patch_lengths[-1]
-                    _patch_lengths[0] -= 1
-                    _patch_lengths = [1] + _patch_lengths[:-1]
-                
-                tokens.append(_tokens[: len(_tokens) - last_patch_length])
-                masks.append(_mask[: len(_mask) - last_patch_length])
-                patch_lengths.append(_patch_lengths)
-            
-            # If we couldn't collect any sequences, we're done
-            if not tokens:
+                    _tokens = sequence.tokens
+                    _mask = sequence.mask
+                    _patch_lengths = sequence.patch_lengths
+                    
+                    assert (
+                        _patch_lengths is not None
+                    ), "patch lengths are required for packing based on patches."
+                    
+                    # Reminder: seq_len is in terms of patches
+                    assert len(sequence.patch_lengths) == self.packing_args.seq_len
+                    
+                    # Process patches
+                    last_patch_length = 0
+                    if _patch_lengths[0] > 1:
+                        last_patch_length = _patch_lengths[-1]
+                        _patch_lengths[0] -= 1
+                        _patch_lengths = [1] + _patch_lengths[:-1]
+                    
+                    tokens.append(_tokens[: len(_tokens) - last_patch_length])
+                    masks.append(_mask[: len(_mask) - last_patch_length])
+                    patch_lengths.append(_patch_lengths)
+            except StopIteration:
+                stop_iteration = True
+
+            if len(tokens) == 0 and stop_iteration:
                 break
-                
+
             # Create batch arrays with appropriate padding
             x_patch_lengths = np.array(patch_lengths)
             tok_seq_len = max([len(toks) for toks in tokens]) - 1
