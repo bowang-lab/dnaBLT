@@ -128,7 +128,7 @@ class LightningIterableDataset(IterableDataset):
         return self.stateful_iterator.create_iter()
 
 
-from bytelatent.transformer import LMTransformer ## this is the LMtransformer that they used in the train.py
+from bytelatent.model.blt import ByteLatentTransformer ## this is the LMtransformer that they used in the train.py
 
 
 def compute_loss(pred, target, mask, scale=1.0):
@@ -229,11 +229,7 @@ class MyLightningModule(pl.LightningModule):
         torch.manual_seed(args.seed)
         
 
-        self.model = LMTransformer(
-            vocab_size=args.model["vocab_size"],
-            d_model=args.model["d_model"],
-            n_layers=args.model["n_layers"]
-        )
+        self.model = ByteLatentTransformer(args.model)
         
 
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=args.optim.lr)

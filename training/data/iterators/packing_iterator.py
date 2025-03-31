@@ -1,5 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 from enum import Enum
+from dataclasses import dataclass
 from typing import Any, Generator, List, Optional
 from pydantic import BaseModel
 

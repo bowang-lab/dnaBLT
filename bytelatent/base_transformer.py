@@ -16,7 +16,6 @@ from torch.nn.attention.flex_attention import (
 )
 from xformers.ops import AttentionBias, fmha
 
-from bytelatent import probe
 from bytelatent.blt_tokenizers.constants import EOS_ID
 
 logger = logging.getLogger()
