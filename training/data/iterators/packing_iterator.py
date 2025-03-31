@@ -1,0 +1,374 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+from enum import Enum
+from typing import Any, Generator, List, Optional
+from pydantic import BaseModel
+
+import numpy as np
+
+class PackingMode(str, Enum):
+    BYTES = "bytes"
+    PATCHING = "patching"
+
+class PackingArgs:
+    def __init__(
+        self,
+        batch_size: int,
+        seq_len: int,
+        pad_id: int,
+        max_length: Optional[int],
+        pad_to_max_length: bool,
+        enable_byte_ngrams: bool,
+        packing_mode: PackingMode,
+    ):
+        self.batch_size = batch_size
+        self.seq_len = seq_len
+        self.pad_id = pad_id
+        self.max_length = max_length
+        self.pad_to_max_length = pad_to_max_length
+        self.enable_byte_ngrams = enable_byte_ngrams
+        self.packing_mode = packing_mode
+
+class BltSequence(BaseModel):
+    tokens: list[int]
+    mask: list[bool]
+    patch_lengths: list[int] | None
+
+@dataclass
+class Batch:
+    x: np.ndarray
+    y: np.ndarray
+    mask: np.ndarray | None = None
+    patch_lengths: np.ndarray | None = None
+    ngram_ids: np.ndarray | None = None
+    is_final: bool = False
+
+    def to_python_dict(self) -> dict:
+        x = self.x.tolist()
+        y = self.y.tolist()
+        if self.mask is None:
+            mask = None
+        else:
+            mask = self.mask.tolist()
+        if self.patch_lengths is None:
+            patch_lengths = None
+        else:
+            patch_lengths = self.patch_lengths.tolist()
+        if self.ngram_ids is None:
+            ngram_ids = None
+        else:
+            ngram_ids = self.ngram_ids.tolist()
+        return {
+            "x": x,
+            "y": y,
+            "mask": mask,
+            "patch_lengths": patch_lengths,
+            "ngram_ids": ngram_ids,
+            "is_final": self.is_final,
+        }
+
+    @classmethod
+    def from_python_dict(cls, data: dict) -> "Batch":
+        x = np.array(data["x"])
+        y = np.array(data["y"])
+        if data["mask"] is None:
+            mask = None
+        else:
+            mask = np.array(data["mask"])
+        if data["patch_lengths"] is None:
+            patch_lengths = None
+        else:
+            patch_lengths = np.array(data["patch_lengths"])
+        if data["ngram_ids"] is None:
+            ngram_ids = None
+        else:
+            ngram_ids = np.array(data["ngram_ids"])
+        return Batch(
+            x=x,
+            y=y,
+            mask=mask,
+            patch_lengths=patch_lengths,
+            ngram_ids=ngram_ids,
+            is_final=data["is_final"],
+        )
+
+def _merge_patch_seq_masks(bs: int, slen: int, mask_seqs: List[List[bool]]):
+    assert len(mask_seqs) == bs
+    lens = [len(m) for m in mask_seqs]
+    if all(all(m) for m in mask_seqs) and all(lens[0] == l for l in lens):
+        return np.ones((bs, slen), dtype=bool)
+    assert slen == max(lens) - 1, f"slen={slen} != max(lens)-1={max(lens) - 1}"
+    mask = np.zeros((bs, slen), dtype=bool)
+    for i, m in enumerate(mask_seqs):
+        if m is None:
+            print(
+                "Did not implement None mask, the mask should be True for all toks, so we need to pass that to this function."
+            )
+            raise NotImplementedError
+        mask[i][: len(mask_seqs[i]) - 1] = mask_seqs[i][1:]
+    return mask
+
+def truncate_batch(
+    batch: Batch,
+    max_length: int,
+    pad_id: int,
+    pad_to_max_length: bool = False,
+    enable_byte_ngrams: bool = False,
+):
+    """
+    Truncate the x to a given size, making sure we remove the corresponding patch sizes in patch_lenghts
+    and fixing the batch.mask.
+
+    batch.patch_lengths has unchanged shape
+    x,y, and mask may reduce in size
+    """
+    if batch.patch_lengths is None:
+        return batch
+
+    seq_lengths = batch.patch_lengths.sum(axis=1)
+    max_length_adj = max_length + 1
+    if np.any(seq_lengths > max_length_adj):
+        for i in range(batch.x.shape[0]):
+            if seq_lengths[i] > max_length_adj:
+                # Find id of patch that tips over max_length + 1
+                count, j = 0, 0
+                while count + batch.patch_lengths[i, j] <= max_length_adj:
+                    count += batch.patch_lengths[i, j]
+                    j += 1
+                # Edit the batch
+                assert j < batch.patch_lengths.shape[1]
+                batch.x[i, max_length:] = pad_id
+                batch.y[i, max_length:] = pad_id
+                if batch.mask is not None:
+                    batch.mask[i, max_length:] = False
+                batch.patch_lengths[i, j:] = 0
+                batch.patch_lengths[i, j] = max_length_adj - count
+
+        # Truncate if necessary.
+        if max_length < batch.x.shape[1]:
+            batch.x = batch.x[:, :max_length]
+            batch.y = batch.y[:, :max_length]
+            if batch.mask is not None:
+                batch.mask = batch.mask[:, :max_length]
+
+    # Right pad to max_length if necessary
+    elif pad_to_max_length:
+        if batch.x.shape[1] < max_length:
+            # NOTE: this has to be done on an actual patch.
+            non_zero_indices = (batch.patch_lengths != 0).sum(axis=1) - 1
+            non_zero_indices = np.maximum(0, non_zero_indices)
+            batch.patch_lengths[range(len(batch.patch_lengths)), non_zero_indices] += (
+                max_length - batch.x.shape[1]
+            )
+            # TODO: We could get rid of many of these complications by moving this function directly in the dataloader.
+            x = np.full((batch.x.shape[0], max_length), pad_id, dtype=batch.x.dtype)
+            x[:, : batch.x.shape[1]] = batch.x
+            batch.x = x
+        if batch.y.shape[1] < max_length:
+            y = np.full((batch.y.shape[0], max_length), pad_id, dtype=batch.y.dtype)
+            y[:, : batch.y.shape[1]] = batch.y
+            batch.y = y
+        if batch.mask is not None and batch.mask.shape[1] < max_length:
+            mask = np.full(
+                (batch.mask.shape[0], max_length), False, dtype=batch.mask.dtype
+            )
+            mask[:, : batch.mask.shape[1]] = batch.mask
+            batch.mask = mask
+
+    assert batch.x.shape[1] <= max_length
+    assert batch.y.shape[1] <= max_length
+    assert batch.mask is None or batch.mask.shape[1] <= max_length
+    assert np.all(max_length_adj - batch.patch_lengths.sum(axis=1) == 0)
+    if pad_to_max_length:
+        assert batch.x.shape[1] == max_length
+        assert batch.y.shape[1] == max_length
+        assert batch.mask is None or batch.mask.shape[1] == max_length
+    if enable_byte_ngrams:
+        raise NotImplementedError("Byte n-grams are not implemented")
+        # ngram_ids = np.array(tokenizer.encode_token_ngrams(batch.x))
+        # assert ngram_ids.shape[2] == batch.x.shape[1]
+    else:
+        ngram_ids = None
+    batch.ngram_ids = ngram_ids
+
+
+class PackingIterator:
+    def __init__(
+        self,
+        sequences: List[BltSequence],
+        packing_args: PackingArgs,
+    ):
+        """
+        Initialize a packing iterator that batches sequences according to packing mode.
+        
+        Args:
+            sequences: List of sequences to be packed
+            packing_args: Configuration for packing
+        """
+        self.sequences = sequences
+        self.packing_args = packing_args
+        self.current_idx = 0
+
+    def __iter__(self) -> Generator[Batch, Any, None]:
+        """Return an iterator over batches"""
+        if self.packing_args.packing_mode == PackingMode.BYTES:
+            yield from self._create_iter_from_bytes()
+        elif self.packing_args.packing_mode == PackingMode.PATCHING:
+            yield from self._create_iter_from_patch_lengths()
+        else:
+            raise ValueError(f"Invalid patching mode: {self.packing_args.packing_mode}")
+
+    """
+    For the next couple iterations, in the original implementation, they used an Iterator that was defined, but we want to make this simpler. As a result, the work around for this was to 
+    replicate the same functionality via a more specific while loop condition. 
+
+    In the original code, there was a While True loop, but in this one, what we are doing is manually checking if the index has surpassed the length of the sequence.
+
+    """
+
+    def _create_iter_from_bytes(self):
+        batch_size = self.packing_args.batch_size
+        pad_id = self.packing_args.pad_id
+        seq_len = self.packing_args.seq_len
+        
+        while self.current_idx < len(self.sequences):
+            tokens: List[List[int]] = []
+            masks: List[List[bool]] = []
+            
+            # Collect sequences for the batch
+            for _ in range(batch_size):
+                if self.current_idx >= len(self.sequences):
+                    break
+                
+                sequence = self.sequences[self.current_idx]
+                self.current_idx += 1
+                
+                _tokens = sequence.tokens
+                _mask = sequence.mask
+                assert (
+                    sequence.patch_lengths is None
+                ), "patch_lengths should not be used in byte packing"
+                
+                tokens.append(_tokens)
+                masks.append(_mask)
+            
+            # If we couldn't collect any sequences, we're done
+            if not tokens:
+                break
+                
+            # Create batch arrays with appropriate padding
+            x = np.full((batch_size, seq_len), fill_value=pad_id)
+            y = np.full((batch_size, seq_len), fill_value=pad_id)
+            m = np.zeros((batch_size, seq_len), dtype=np.bool_)
+
+            for i, tok_seq in enumerate(tokens):
+                x[i, : len(tok_seq)] = tok_seq
+                y[i, : len(tok_seq) - 1] = tok_seq[1:]
+                m[i, : len(tok_seq)] = masks[i]
+                
+            batch = Batch(x=x, y=y, mask=m)
+            assert (
+                batch.mask is None or np.sum(x != pad_id) == batch.mask.sum()
+            ), f"{np.sum(x != pad_id)} != {batch.mask.sum()}"
+            
+            yield batch
+
+    def _create_iter_from_patch_lengths(self):
+        batch_size = self.packing_args.batch_size
+        pad_id = self.packing_args.pad_id
+        seq_len = self.packing_args.seq_len
+        pad_to_max_length = self.packing_args.pad_to_max_length
+        enable_byte_ngrams = self.packing_args.enable_byte_ngrams
+        max_length = self.packing_args.max_length
+        assert max_length is not None, "max_length must be provided for patch-based packing"
+        
+        while self.current_idx < len(self.sequences):
+            tokens: List[List[int]] = []
+            masks: List[List[bool]] = []
+            patch_lengths: List[List[int]] = []
+            
+            # Collect sequences for the batch
+            for _ in range(batch_size):
+                if self.current_idx >= len(self.sequences):
+                    break
+                    
+                sequence = self.sequences[self.current_idx]
+                self.current_idx += 1
+                
+                _tokens = sequence.tokens
+                _mask = sequence.mask
+                _patch_lengths = sequence.patch_lengths
+                
+                assert (
+                    _patch_lengths is not None
+                ), "patch lengths are required for packing based on patches."
+                
+                # Reminder: seq_len is in terms of patches
+                assert len(sequence.patch_lengths) == seq_len
+                
+                # Process patches
+                last_patch_length = 0
+                if _patch_lengths[0] > 1:
+                    last_patch_length = _patch_lengths[-1]
+                    _patch_lengths[0] -= 1
+                    _patch_lengths = [1] + _patch_lengths[:-1]
+                
+                tokens.append(_tokens[: len(_tokens) - last_patch_length])
+                masks.append(_mask[: len(_mask) - last_patch_length])
+                patch_lengths.append(_patch_lengths)
+            
+            # If we couldn't collect any sequences, we're done
+            if not tokens:
+                break
+                
+            # Create batch arrays with appropriate padding
+            x_patch_lengths = np.array(patch_lengths)
+            tok_seq_len = max([len(toks) for toks in tokens]) - 1
+            
+            x = np.full((batch_size, tok_seq_len), fill_value=pad_id)
+            y = np.full((batch_size, tok_seq_len), fill_value=pad_id)
+
+            for i, tok_seq in enumerate(tokens):
+                x[i, : len(tok_seq) - 1] = tok_seq[:-1]
+                y[i, : len(tok_seq) - 1] = tok_seq[1:]
+                # Adjust patch lengths to match x
+                x_patch_lengths[i, -1] += tok_seq_len - (len(tok_seq) - 1)
+
+            assert x_patch_lengths.shape == (batch_size, seq_len)
+
+            if enable_byte_ngrams:
+                raise NotImplementedError("Byte n-grams are not implemented")
+            else:
+                ngram_ids = None
+
+            # Create the batch
+            batch = Batch(
+                x=x,
+                y=y,
+                patch_lengths=x_patch_lengths,
+                ngram_ids=ngram_ids,
+                mask=_merge_patch_seq_masks(batch_size, tok_seq_len, masks),
+            )
+
+            # Validate the batch
+            assert (
+                x_patch_lengths.sum() == x.size + batch_size
+            ), f"{x_patch_lengths.sum()} != {x.size + batch_size}"
+            assert (
+                batch.mask is None or np.sum(x != pad_id) == batch.mask.sum()
+            ), f"{np.sum(x != pad_id)} != {batch.mask.sum()}"
+            assert np.all(
+                x_patch_lengths[:, 0] == 1
+            ), f"first patch should always be 1, {x_patch_lengths[:, 0]}"
+            
+            # GPU memory tracking code removed
+
+            # Truncate if needed
+            truncate_batch(
+                batch,
+                max_length=max_length,
+                pad_id=pad_id,
+                pad_to_max_length=pad_to_max_length,
+                enable_byte_ngrams=enable_byte_ngrams,
+            )
+            
+            yield batch
