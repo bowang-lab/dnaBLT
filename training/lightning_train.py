@@ -1,290 +1,230 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import pytorch_lightning as pl
-from torch.utils.data import IterableDataset, DataLoader
-import numpy as np
+import os
+import math
 import random
-from dataclasses import dataclass, field
-from bytelatent.data.iterators.arrow_iterator import ArrowFileIterator
+import gc
+from dataclasses import asdict
+from typing import Any, Optional, Union, List, Dict
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torch.optim import lr_scheduler
+
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import ModelCheckpoint
+
+from data.iterators.arrow_iterator import ArrowFileIterator
+from args import TrainArgs
+
+from bytelatent.model.blt import ByteLatentTransformer, ByteLatentTransformerArgs
+from bytelatent.optim import build_optimizer
+from bytelatent.transformer import LMTransformer
+from bytelatent.eval import EVAL_FOLDER_NAME, launch_eval
+
+
 
 ###############################################
-# this is our top down approach, the following methods of course need to be updated, but this is a good first step
+# Simple Tokenizer Implementation
 ###############################################
 
-class SimpleTokenizer: # DONE
+class SimpleTokenizer:
     def __init__(self):
-        self.n_words = 4 # ACTG
-        self.unk_token = 78  # unknown token id = "N"
-        # Hyperefficient implementation of StripedHyena Char Tokenizer
-
-    def encode(self, text: str) -> list:
+        self.n_words = 4  # e.g., for ACTG in a genomic context
+        self.unk_token = 78  # unknown token id, e.g., for "N"
+    
+    def encode(self, text: str) -> List[int]:
         return list(text.encode("utf-8"))
-
-    def decode(self, tokens: list) -> str:
+    
+    def decode(self, tokens: List[int]) -> str:
         return bytes(tokens).decode("utf-8")
 
-
-@dataclass
-class TokenizerArgs: 
-    def build(self) -> SimpleTokenizer:
-        return SimpleTokenizer()
-
-
-# --- TODO: need to implement this correctly ofc ---
-class SimplePatcher:
-    """
-    A simple patcher that splits a token sequence into fixed-size patches.
-    For each example, we split the sequence into patches of size `patch_size`
-    (except possibly the last patch, which is shorter).
-    """
-    def __init__(self, patch_size: int = 10):
-        self.patch_size = patch_size
-
-    def patch(self, tokens_tensor: torch.Tensor, include_next_token: bool = False) -> torch.Tensor:
-        # tokens_tensor shape: [batch, seq_len]
-        batch, seq_len = tokens_tensor.shape
-        seq_len_next = seq_len + 1 if include_next_token else seq_len
-        # Calculate number of patches (ceil division)
-        num_patches = (seq_len_next + self.patch_size - 1) // self.patch_size
-        patch_lengths = []
-        for _ in range(batch):
-            # Create a list of patch lengths
-            lengths = [self.patch_size] * num_patches
-            total = sum(lengths)
-            if total > seq_len_next:
-                # Adjust the last patch length
-                lengths[-1] = seq_len_next - self.patch_size * (num_patches - 1)
-            patch_lengths.append(lengths)
-        # Pad patch lengths so every example has the same number of patches
-        max_len = max(len(plist) for plist in patch_lengths)
-        padded = [plist + [0] * (max_len - len(plist)) for plist in patch_lengths]
-        return torch.tensor(padded, dtype=torch.long)
-
-
-@dataclass
-class PatcherArgs:
-    patch_size: int = 10
-
-    def build(self) -> SimplePatcher:
-        return SimplePatcher(patch_size=self.patch_size)
-
-
-# TODO: implement this
-@dataclass
-class BltExample:
-    sample_id: int
-    text: str
-    tokens: list
-    mask: list
-    patch_lengths: list = None
-    entropies: list = None
-
-# this will be our preproces iterator, will do the arrow file iteration + the patching
-class SimplePreprocessIterator:
-    """
-    A simple iterator that yields BltExample objects.
-    It takes a list of raw texts, tokenizes them using the provided tokenizer,
-    pads/truncates to a fixed sequence length, and applies patching.
-    """
-    def __init__(self, arrow_iterator: ArrowFileIterator, seq_len: int, tokenizer_args: TokenizerArgs = None, patcher_args: PatcherArgs = None):
-        self.arrow_iterator = arrow_iterator
-        self.seq_len = seq_len
-        # Build tokenizer; use default if not provided.
-        if tokenizer_args is None:
-            tokenizer_args = TokenizerArgs()
-        self.tokenizer = tokenizer_args.build()
-        # Build patcher; use default if not provided.
-        if patcher_args is None:
-            patcher_args = PatcherArgs()
-        self.patcher = patcher_args.build()
-
-    def create_iter(self):
-        example_iter = self.arrow_iterator.create_iter()
-        for example in example_iter:
-            text = example.text
-            tokens = self.tokenizer.encode(text) # or just example.tokens
-            entropies = torch.tensor(example.entropies).unsqueeze(0)
-            patch_lengths = self.patcher.patch(torch.tensor(tokens).unsqueeze(0), entropies=entropies, include_next_token=False)[0][0].tolist()
-            yield BltExample(
-                sample_id=example.sample_id,
-                text=text,
-                tokens=tokens,
-                mask=[True] * len(tokens),
-                patch_lengths=patch_lengths,
-                entropies=example.entropies
-            )
-
-
-# this is the iterator, also needs to be implemented
-class LightningIterableDataset(IterableDataset):
-    def __init__(self, stateful_iterator):
-        """
-        Wraps an iterator (which implements create_iter) into an IterableDataset.
-        """
-        self.stateful_iterator = stateful_iterator
-
-    def __iter__(self):
-        return self.stateful_iterator.create_iter()
-
-
-from bytelatent.model.blt import ByteLatentTransformer ## this is the LMtransformer that they used in the train.py
-
-
-def compute_loss(pred, target, mask, scale=1.0):
-    """
-    A simple cross-entropy loss function.
-    For language modeling, target is typically the input tokens shifted by one.
-    """
-    batch, seq_len, vocab_size = pred.shape
-    pred = pred.reshape(-1, vocab_size)
-    target = target.reshape(-1)
-    loss = F.cross_entropy(pred, target)
-    # Here, we return the same loss as both overall loss and token-level loss.
-    return loss * scale, loss * scale
-
 ###############################################
-# TrainArgs and related configuration
+# Helper Functions
 ###############################################
 
-@dataclass
-class DataloaderArgs:
-    batch_size: int = 2  # Note: our iterator yields one example at a time.
-    seq_len: int = 50
-    # For demonstration, we use a fixed list of texts.
-    sources: list = field(default_factory=lambda: [
-        "This is the first sample sentence for training.",
-        "Another example text is here.",
-        "Yet another piece of text to simulate training data.",
-    ])
-    # Allow attaching tokenizer and patcher arguments.
-    tokenizer_args: TokenizerArgs = TokenizerArgs()
-    patcher_args: PatcherArgs = PatcherArgs(patch_size=10)
+def flatten_dict(d: Dict, parent_key: str = "", sep: str = "_") -> Dict:
+    """Flatten a nested dictionary for logging purposes."""
+    items = []
+    for k, v in d.items():
+        new_key = f"{parent_key}{sep}{k}" if parent_key else k
+        if isinstance(v, dict):
+            items.extend(flatten_dict(v, new_key, sep=sep).items())
+        else:
+            items.append((new_key, v))
+    return dict(items)
 
-    def build_iterator(self):
-        return SimplePreprocessIterator(self.sources, self.seq_len, self.tokenizer_args, self.patcher_args)
+def to_py_num(num: Union[int, float, torch.Tensor, np.ndarray]) -> Union[int, float]:
+    """Convert a tensor or ndarray to a native Python number."""
+    if isinstance(num, (torch.Tensor, np.ndarray)):
+        return num.item()
+    else:
+        return num
 
-
-@dataclass
-class OptimArgs:
-    lr: float = 1e-3
-    clip: float = 1.0
-
-
-@dataclass
-class CheckpointArgs:
-    init_ckpt_path: str = None
-    s3_profile: str = None
-
-
-@dataclass
-class DistributedArgs:
-    pass
-
-
-@dataclass
-class EnvironmentArgs:
-    pass
-
-
-@dataclass
-class ProfilerArgs:
-    pass
-
-
-@dataclass
-class LoggingArgs:
-    pass
-
-
-@dataclass
-class TrainArgs:
-    seed: int = 42
-    steps: int = 1000
-    grad_acc_steps: int = 1
-    train_entropy_model: bool = False
-    data: DataloaderArgs = DataloaderArgs()
-    optim: OptimArgs = OptimArgs()
-    # For simplicity, we define model parameters in a dict.
-    model: dict = field(default_factory=lambda: {"d_model": 32, "n_layers": 2, "vocab_size": 100})
-    checkpoint: CheckpointArgs = CheckpointArgs()
-    distributed: DistributedArgs = DistributedArgs()
-    env: EnvironmentArgs = EnvironmentArgs()
-    profiling: ProfilerArgs = ProfilerArgs()
-    logging: LoggingArgs = LoggingArgs()
+def compute_loss(predictions, targets, mask, scale):
+    """Compute cross-entropy loss with optional masking."""
+    tok_loss = scale * F.cross_entropy(
+        predictions.flatten(0, 1), targets.flatten(0, 1), reduction="none"
+    )
+    if mask is None:
+        loss = tok_loss.mean()
+    else:
+        mask = mask.flatten(0, 1)
+        tok_loss = tok_loss * mask
+        loss = tok_loss.sum() / (mask.sum() + 1e-6)
+    return loss, tok_loss
 
 ###############################################
-# PyTorch Lightning Module
+# Lightning Module
 ###############################################
 
-class MyLightningModule(pl.LightningModule):
+class ByteLatentLightningModule(pl.LightningModule):
     def __init__(self, args: TrainArgs):
         super().__init__()
         self.args = args
+        self.save_hyperparameters(asdict(args))
         
-        self.tokenizer = args.data.tokenizer_args.build()
-
-        if self.tokenizer.n_words < args.model["vocab_size"]:
-            raise ValueError("Tokenizer vocab size is smaller than model vocab size.")
-        torch.manual_seed(args.seed)
+        # Build tokenizer (fallback to SimpleTokenizer if no build() method is provided)
+        self.tokenizer = (args.data.tokenizer_args.build() 
+                          if hasattr(args.data.tokenizer_args, "build") 
+                          else SimpleTokenizer())
+        
+        # Initialize model: either an entropy model or the main model.
+        if args.train_entropy_model:
+            assert args.entropy_model is not None, "Entropy model must be provided."
+            self.model = LMTransformer(args.entropy_model)
+            self.model_args = args.entropy_model
+        else:
+            assert args.model is not None, "Model configuration must be provided."
+            self.model = ByteLatentTransformer(args.model)
+            self.model_args = args.model
+        
+        # Initialize model weights
+        self.model.init_weights()
         
 
-        self.model = ByteLatentTransformer(args.model)
         
-
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=args.optim.lr)
-        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=100, gamma=0.95)
-        
-
-        iterator = args.data.build_iterator()
-        self.train_dataset = LightningIterableDataset(iterator)
-
     def forward(self, x, patch_lengths=None, ngram_ids=None):
-        return self.model(x, patch_lengths=patch_lengths, ngram_ids=ngram_ids)
-        
+        if self.args.train_entropy_model:
+            return self.model(x)
+        else:
+            return self.model(x, patch_lengths=patch_lengths, ngram_ids=ngram_ids)
+    
     def training_step(self, batch, batch_idx):
-        """
-        In our simple example, batch is a BltExample.
-        We convert its fields into tensors.
-        """
-
-        batch_x = torch.tensor(batch.tokens, dtype=torch.long)
-
-        batch_y = torch.tensor(batch.tokens, dtype=torch.long)
-        mask = torch.tensor(batch.mask) if batch.mask is not None else None
-        patch_lengths = (torch.tensor(batch.patch_lengths, dtype=torch.long)
-                         if batch.patch_lengths is not None else None)
-
-        pred = self.forward(batch_x, patch_lengths=patch_lengths)
-        loss, _ = compute_loss(pred, batch_y, mask, scale=1.0)
-        self.log("train_loss", loss, prog_bar=True, on_step=True)
+        batch_x = batch.x
+        batch_y = batch.y
+        batch_patch_lengths = batch.patch_lengths  # may be None
+        mask = batch.mask  # may be None
+        ngram_ids = batch.ngram_ids  # may be None
+        
+        # Update byte count for metrics based on tokenizer type
+        if self.args.data.tokenizer_args.name in ["bytes", "blt"]:
+            self.n_bytes += batch_y.numel() if mask is None else mask.sum().item()
+        elif self.args.data.tokenizer_args.name in ["sp", "tiktoken"]:
+            for example in batch.y:
+                target_tokens = self.tokenizer.decode(example.tolist())
+                self.n_bytes += (
+                    len(target_tokens.encode("utf-8")) +
+                    (example == self.tokenizer.eos_id).sum().item() +
+                    (example == self.tokenizer.bos_id).sum().item()
+                )
+        else:
+            raise ValueError(f"Unexpected tokenizer: {self.args.data.tokenizer_args.name}")
+        
+        # Forward pass and loss computation
+        pred = self.forward(batch_x, batch_patch_lengths, ngram_ids)
+        loss, tok_loss = compute_loss(pred, batch_y, mask, scale=1.0)
+        
+        
+        
         return loss
-
+    
     def configure_optimizers(self):
+        optimizer, scheduler = build_optimizer(self.model, self.args.optim, self.args.steps)
         return {
-            "optimizer": self.optimizer,
+            "optimizer": optimizer,
             "lr_scheduler": {
-                "scheduler": self.scheduler,
-                "interval": "step", 
-            },
+                "scheduler": scheduler,
+                "interval": "step"
+            }
         }
+
+
+###############################################
+# DataModule and Iterator Wrapper (No IterableDataset)
+###############################################
+
+class ArrowIteratorWrapper:
+    """
+    A minimal wrapper that simply returns a fresh iterator from the arrow iterator each time.
+    """
+    def __init__(self, arrow_iterator: ArrowFileIterator):
+        self.arrow_iterator = arrow_iterator
+
+    def __iter__(self):
+        # Each call returns a new iterator from the arrow iterator.
+        return self.arrow_iterator.create_iter()
+
+class ByteLatentDataModule(pl.LightningDataModule):
+    def __init__(self, args: TrainArgs):
+        super().__init__()
+        self.args = args
+        self.data_loader = None
+    
+    def setup(self, stage=None):
+        # Build the arrow iterator for single-process operation.
+        self.data_loader = self.args.data.build_from_rank(rank=0, world_size=1)
     
     def train_dataloader(self):
-        return DataLoader(self.train_dataset, batch_size=None)  # Each item is a single example
+        # Instead of wrapping with an IterableDataset, we wrap the arrow iterator in a minimal wrapper.
+        return ArrowIteratorWrapper(self.data_loader)
+
+###############################################
+# Training Function and Main Entrypoint
+###############################################
+
+def train(args: TrainArgs):
 
 
-
-def main(args: TrainArgs):
-    model = MyLightningModule(args)
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    random.seed(args.seed)
+    
+    # Initialize the Lightning module and datamodule.
+    model = ByteLatentLightningModule(args)
+    data_module = ByteLatentDataModule(args)
+    
+    # Set up a checkpoint callback.
+    checkpoint_callback = ModelCheckpoint(
+        dirpath=args.checkpoint.path or os.path.join(args.dump_dir, "checkpoints"),
+        filename="{epoch}-{step}",
+        save_top_k=args.checkpoint.dump.keep if args.checkpoint.dump.keep > 0 else -1,
+        every_n_train_steps=args.checkpoint.dump.every,
+        save_on_train_epoch_end=False,
+    )
+    
+   
+    
+    # Initialize the Lightning Trainer for a single device.
     trainer = pl.Trainer(
         max_steps=args.steps,
+        accelerator="auto",  # Will use CPU if GPU is unavailable.
+        devices=1,
+        callbacks=[checkpoint_callback],
+        gradient_clip_val=args.optim.clip,
         accumulate_grad_batches=args.grad_acc_steps,
-        gpus=1 if torch.cuda.is_available() else 0,
+        precision=32,
     )
-    trainer.fit(model)
+    
+    # Train the model.
+    trainer.fit(model, datamodule=data_module)
+ 
+    
+    gc.collect()
+
+def main():
+
+    train_args = TrainArgs()
+    train(train_args)
 
 if __name__ == "__main__":
-
-    args = TrainArgs() ## this is very key, ensure that trainargs is done properly
-
-    main(args)
+    main()

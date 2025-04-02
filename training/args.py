@@ -35,6 +35,9 @@ class CheckpointArgs(BaseModel):
     s3_profile: str | None = None
 
 
+TRAIN_DATA_FILE_PATTERN = None
+
+
 
 def get_rng_state(seed: int, rank: int, world_size: int) -> dict[str, Any]:
     return np.random.default_rng((seed, rank, world_size)).bit_generator.state
