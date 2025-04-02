@@ -1,12 +1,13 @@
 from typing import Any, Generator, Iterator, Dict
 import numpy as np
+from sequence_iterator import SequenceIterator
 
 class SamplingIterator:
     def __init__(
         self,
         *,
         source_to_weight: Dict[str, float],
-        source_to_iterator: Dict[str, Iterator],
+        source_to_iterator: Dict[str, SequenceIterator],
         seed: int = None
     ):
         """

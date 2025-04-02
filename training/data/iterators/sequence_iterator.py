@@ -10,7 +10,7 @@ class BltSequence(BaseModel):
     patch_lengths: list[int] | None
 
     
-class SequencePackingConfig:
+class SequencePackingArgs:
     """Configuration for sequence packing parameters."""
     def __init__(self, output_seq_len: int, buffer_size: int):
         self.output_seq_len = output_seq_len
@@ -26,7 +26,7 @@ class SequenceIterator:
         self,
         preprocess_iterator: PreprocessIterator,
         *,
-        sequence_packing_config: SequencePackingConfig,
+        sequence_packing_config: SequencePackingArgs,
         seed: Optional[int] = None,
     ):
         """Initialize the sequence iterator.
