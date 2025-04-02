@@ -17,7 +17,7 @@ from bytelatent.base_transformer import (
 )
 from bytelatent.data.patcher import Patcher, PatcherArgs
 from bytelatent.model.latent_transformer import GlobalTransformer
-from bytelatent.model.mamba import GlobalMamba
+from bytelatent.model.striped_hyena2 import GlobalStripedHyena2
 from bytelatent.model.local_models import LocalDecoder, LocalEncoder, LocalModelArgs
 from bytelatent.model.utils import downsample
 from bytelatent.blt_tokenizers.constants import BOE_ID, BOS_ID, EOS_ID, OFFSET, PAD_ID
@@ -562,18 +562,17 @@ class GlobalTransformerArgs(ByteLatentTransformerArgs):
         self.cross_attn_decoder = False
 
 
-class GlobalMambaArgs(ByteLatentTransformerArgs):
+class GlobalStripedHyena2Args(ByteLatentTransformerArgs):
     # Global encoder specific dimensions
     dim_token_emb: int | None = None
     dim_patch_emb: int | None = None
 
     def __post_init__(self):
-        # Override base args with global mamba specific values
-        self.architecture = "mamba"
+        # Override base args with global striped hyena2 specific values
+        self.architecture = "stripedhyena2"
         self.dim = self.dim_global
         self.n_layers = self.n_layers_global
         self.n_heads = self.n_heads_global
-        self.state_size = self.state_size
 
 
 class LocalDecoderArgs(ByteLatentTransformerArgs):
@@ -610,18 +609,23 @@ def create_global_transformer(args: ByteLatentTransformerArgs) -> GlobalTransfor
     return GlobalTransformer(global_args)
 
 
-def create_global_mamba(args: ByteLatentTransformerArgs) -> GlobalMamba:
+def create_global_striped_hyena2(args: ByteLatentTransformerArgs) -> GlobalStripedHyena2:
     global_args = args.model_copy(
         deep=True,
         update=dict(
             dim=args.dim_global,
             n_layers=args.n_layers_global,
             n_heads=args.n_heads_global,
-            state_size=args.state_size,
+            n_kv_heads=args.n_kv_heads_global,
+            local_attention_window_len=None,
+            dim_token_emb=get_global_dim_patch_emb(args),
+            dim_patch_emb=None,
+            cross_attn_encoder=False,
+            cross_attn_decoder=False,
         ),
     )
 
-    return GlobalMamba(global_args)
+    return GlobalStripedHyena2(global_args)
 
 
 def create_local_encoder(args: ByteLatentTransformerArgs) -> LocalEncoder:
@@ -843,8 +847,8 @@ class ByteLatentTransformer(nn.Module, SequenceModelWithOutput):
         # ByteLatent modules
         if args.architecture == "vanilla":
             self.global_transformer = create_global_transformer(args)
-        elif args.architecture == "mamba":
-            self.global_transformer = create_global_mamba(args)
+        elif args.architecture == "stripedhyena2":
+            self.global_transformer = create_global_striped_hyena2(args)
         else:
             raise ValueError(f"Invalid architecture: {args.architecture}")
 
