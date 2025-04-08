@@ -291,16 +291,16 @@ class TrainArgs(BaseModel):
 
     # Number of gradient accumulation steps
     # Total batch size is batch_size*grad_acc_steps
-    grad_acc_steps: int = 1
+    grad_acc_steps: int = 16
 
     gc_collect_freq: int = 1000
     probe_freq: int | None = None
 
-    # Nb optimizer steps to take
-    steps: int = 1000
+    # Nb optimizer steps to take | 9B token run / 2M token batch = 4500 steps.
+    steps: int = 4500 
     # If not None, halt training after this many steps,
     # useful for debugging
-    max_steps: int | None = None
+    max_steps: int | None = 4500
 
     data: DataloaderArgs = DataloaderArgs()
     optim: OptimArgs = OptimArgs()

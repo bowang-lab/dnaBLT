@@ -17,7 +17,7 @@ from args import TrainArgs
 
 from arrow_iterator import ArrowFileIterator
 
-# from bytelatent.model.blt import ByteLatentTransformer, ByteLatentTransformerArgs
+from bytelatent.model.blt import ByteLatentTransformer
 # make sure to import the BLT here
 from optim import build_optimizer
 # from transformer import LMTransformer
@@ -115,7 +115,7 @@ class ByteLatentLightningModule(pl.LightningModule):
         #     self.model_args = args.entropy_model
         # else:
         assert args.model is not None, "Model configuration must be provided."
-        self.model = DummyModel(input_dim=128, output_dim=128)  # Or whatever values make sense for your test
+        self.model = ByteLatentTransformer(args.model)  # Or whatever values make sense for your test
         self.model_args = args.model
 
         ## change this so we call the BLT here and not the dummy model
@@ -273,10 +273,10 @@ def train(args: TrainArgs, test_mode = False):
     
     gc.collect()
 
-# def main():
-
-#     train_args = TrainArgs()
-#     train(train_args)
-
-# if __name__ == "__main__":
-#     main()
+if __name__ == "__main__":
+    # FLOPs,Patch size,Tokens,Encoder parameters,Global transformer parameters,
+    # Decoder parameters,Global transformer dimension,Encoder/Decoder dimension,
+    # Global transformer layers,Decoder layers
+    #s,2,8977160953.457802,789760,100769792,3948800,1024,256,8,5 
+    train_args = TrainArgs()
+    train()

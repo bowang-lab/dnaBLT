@@ -61,55 +61,53 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     # Basic model configuration
     seed: int = 42
     vocab_size: int = -1
-    dim: int = 512
+    dim: int = 1024
     n_layers: int = 8
     n_heads: int = 8
-    state_size: int = 128
-    # TODO: What is the purpose of this parameter?
     weight_tying: bool = False
     architecture: str = "vanilla" # For Mamba use "mamba"
     patch_in_forward: bool = False
 
     # Architecture and dimensions
     dim_token: int | None = None
-    dim_global: int = 512
-    dim_local_decoder: int = 512
-    dim_local_encoder: int = 512
+    dim_global: int = 1024
+    dim_local_decoder: int = 256
+    dim_local_encoder: int = 256
     n_layers_global: int = 8
-    n_layers_local_decoder: int = 8
-    n_layers_local_encoder: int = 8
+    n_layers_local_decoder: int = 5
+    n_layers_local_encoder: int = 1
 
     # Tokenization and patching
     patch_size: float | None = None
-    patching_mode: str | None = None
-    patching_threshold: float | None = None
+    patching_mode: str | None = "entropy"
+    patching_threshold: float | None = 1.2
     patching_threshold_add: float | None = None
     monotonicity: bool = False
     patching_batch_size: int = 1
     patching_device: str = "cuda"
-    max_patch_length: int | None = None
+    max_patch_length: int | None = 16
 
     # Encoder/Decoder configuration
     tie_local_encoder_decoder_logits: bool = False
-    use_local_encoder_transformer: bool = False
+    use_local_encoder_transformer: bool = True
     encoder_lm_loss: bool = False
-    max_encoder_seq_length: int | None = None
+    max_encoder_seq_length: int | None = 8192
     pad_to_max_length: bool = False
     encoder_enable_byte_ngrams: bool = False
     encoder_enable_byte_group_hash: bool = False
     ngram_vocab_sizes: int | None = None
 
     # Cross attention configurations
-    cross_attn_encoder: bool = False
-    cross_attn_decoder: bool = False
+    cross_attn_encoder: bool = True
+    cross_attn_decoder: bool = True
     cross_attn_window_encoder: int | None = None
     cross_attn_window_decoder: int | None = None
-    cross_attn_k: int | None = None
-    cross_attn_nheads: int | None = None
-    cross_attn_all_layers_decoder: bool = False
-    cross_attn_all_layers_encoder: bool = False
+    cross_attn_k: int | None = 2
+    cross_attn_nheads: int | None = 4
+    cross_attn_all_layers_decoder: bool = True
+    cross_attn_all_layers_encoder: bool = True
     cross_attn_use_flex_attention: bool = True
-    cross_attn_init_by_pooling: bool = False
+    cross_attn_init_by_pooling: bool = True
 
     # Encoder hash configurations
     encoder_hash_byte_group_size: Any | None = None
@@ -131,7 +129,7 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     init_use_depth: str = "current"
     attn_bias_type: str = "causal"
     alpha_depth: str = "disabled"
-    max_length: int = 2048
+    max_length: int = 8192
 
     # Norm configuration
     norm_eps: float = 1e-5
@@ -141,12 +139,12 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
 
     # Additional configurations
     multiple_of: int = 256
-    ffn_dim_multiplier: float = 1.0
+    ffn_dim_multiplier: float = 2.5
     dropout: float = 0
     output_size: int = -1
 
     # Additional parameters from ModelArgs
-    share_encoder_decoder_emb: bool = True
+    share_encoder_decoder_emb: bool = False
     global_local_decoder_residual_layer: str | None = None
 
     tokenize_with_bpe_delimiter: bool = False
@@ -165,18 +163,18 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     entropy_model_is_ngram_model: bool = False
     downsampling_by_pooling: str | None = None
     n_heads_global: int = 8
-    n_heads_local_decoder: int = 8
-    n_heads_local_encoder: int = 8
+    n_heads_local_decoder: int = 4
+    n_heads_local_encoder: int = 4
     n_kv_heads: int | None = None
     n_kv_heads_global: int | None = None
     conv_kernel_size: int | None = None
-    local_attention_window_len: int | None = None
+    local_attention_window_len: int | None = 512
 
     # Performance optimization
     sequence_parallel: bool = False
     loss_parallel: bool = False
     fuse_sequence_parallel: bool = False
-    use_fsdp: bool = True
+    use_fsdp: bool = False
     attn_to_keep: str = "all"
 
     # Parameter mixing

@@ -13,7 +13,7 @@ logger = logging.getLogger()
 
 class OptimArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    lr: float = 3e-4
+    lr: float = 8e-4
     weight_decay: float = 0.1
     epsilon: float = 1e-8
     beta1: float = 0.9
@@ -21,7 +21,7 @@ class OptimArgs(BaseModel):
     clip: float = 1.0
 
     scheduler: str = "cosine"
-    warmup: int = 2000
+    warmup: int = 45
     lr_min_ratio: float = 0.1
     cycle_length: float = 1.0
     cosine_theta: float = 1.0
