@@ -15,8 +15,8 @@ from data.iterators.packing_iterator import PackingArgs, PackingIterator, Packin
 
 from bytelatent.model.blt import ByteLatentTransformerArgs
 from optim import OptimArgs
-from build_tokenizer import TokenizerArgs
-from patching import PatcherArgs, PatchingModeEnum
+from training.data.iterators.build_tokenizer import TokenizerArgs
+from training.data.iterators.patching import PatcherArgs, PatchingModeEnum
 
 logger = logging.getLogger()
 
@@ -174,7 +174,7 @@ class DataloaderArgs(BaseModel):
                 world_size=world_size,
                 s3_profile=self.s3_profile,
             )
-            looping_iterator = LoopingIterator(arrow_iterator)
+            looping_iterator = arrow_iterator
             preprocess_iterator = PreprocessIterator(
                 looping_iterator,
                 patcher_args=self.patcher_args,
@@ -192,7 +192,7 @@ class DataloaderArgs(BaseModel):
 
     def build_from_rank(
         self, rank: int, world_size: int
-    ) -> StatefulIterator[Batch, Any]:
+    ):
         source_to_sequence_iterators = self._create_sequence_iterators(rank, world_size)
         weight_rng_state = get_rng_state(self.seed + 1, rank, world_size)
         sampling_iterator = SamplingIterator(

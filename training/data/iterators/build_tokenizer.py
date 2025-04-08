@@ -4,9 +4,9 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from bytelatent.blt_tokenizers.blt_tokenizer import BltTokenizer
-from bytelatent.blt_tokenizers.byte_tokenizer import ByteTokenizer
-from bytelatent.blt_tokenizers.tiktoken_tokenizer import TikTokenTokenizer
+from blttokenizer import BltTokenizer
+# from bytelatent.blt_tokenizers.byte_tokenizer import ByteTokenizer
+from tiktoken_tokenizer import TikTokenTokenizer
 
 try:
     from sentencepiece import SentencePieceProcessor
@@ -23,8 +23,8 @@ try:
 except ImportError:
     has_tiktoken = False
 
-from bytelatent.blt_tokenizers.abstract_tokenizer import Tokenizer
-from bytelatent.blt_tokenizers.sentence_piece_tokenizer import SentencePieceTokenizer
+from tokenizer import Tokenizer
+from sentence_piece_tokenizer import SentencePieceTokenizer
 
 logger = logging.getLogger(__name__)
 

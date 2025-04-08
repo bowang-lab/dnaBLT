@@ -2,12 +2,27 @@
 from typing import Any, Generator, Optional
 
 import torch
+from pydantic import BaseModel
 
-from bytelatent.data.data_types import BltExample
-from bytelatent.data.iterators.arrow_iterator import ArrowFileIterator
-from bytelatent.data.patcher import Patcher, PatcherArgs, PatchingModeEnum
-from bytelatent.blt_tokenizers.blt_tokenizer import BltTokenizer
-from bytelatent.blt_tokenizers.build_tokenizer import TokenizerArgs
+# from bytelatent.data.data_types import BltExample
+# from bytelatent.data.iterators.arrow_iterator import ArrowFileIterator
+from patching import Patcher, PatcherArgs, PatchingModeEnum
+# from bytelatent.blt_tokenizers.blt_tokenizer import BltTokenizer
+from build_tokenizer import TokenizerArgs
+
+
+from pydantic import BaseModel, ConfigDict
+
+
+class BltExample(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sample_id: str
+    text: str
+    tokens: list[int] | None
+    entropies: list[float] | None
+    patch_lengths: list[int] | None
+    mask: list[bool] | None
+
 
 
 class PreprocessIterator:
@@ -99,7 +114,7 @@ class PreprocessIterator:
             # Yield the processed example
             yield BltExample(
                 sample_id=example.sample_id,
-                text=example.text,
+                text=example.text,                  
                 tokens=tokens,
                 mask=[True] * len(tokens) if tokens else None,
                 patch_lengths=patch_lengths,

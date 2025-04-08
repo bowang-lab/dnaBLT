@@ -149,6 +149,7 @@ class LengthAwareDistributedBatchSampler(Sampler):
             # Chunk into full batches 
             # this is also where we only care about full batches and get rid of the remainder
             # if we want to include reaminders, we simply get rid of the if condition
+
             for i in range(0, len(seg_list), self.batch_size):
                 if i + self.batch_size <= len(seg_list):
                     batch = seg_list[i : i + self.batch_size]
@@ -242,7 +243,7 @@ if __name__ == "__main__":
         batch_size=batch_size,
         num_replicas=1,
         rank=0,
-        shuffle=True,
+        shuffle=False,
         seed=42,
         segment_size=5,  # break text into segments of length 5 for example
     )
