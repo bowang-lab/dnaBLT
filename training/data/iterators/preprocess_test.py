@@ -78,7 +78,7 @@ class DummyPatcherArgs:
 
 # We'll use ArrowFileIterator as our base iterator.
 # For testing, we'll write a temporary Arrow file with two rows.
-from data.iterators.arrow_iterator import ArrowFileIterator
+# from data.iterators.arrow_iterator import ArrowFileIterator
 
 def create_dummy_arrow_file(temp_dir: str) -> str:
     temp_file = os.path.join(temp_dir, "dummy.arrow")
@@ -107,9 +107,7 @@ class DummyArrowFileIteratorWrapper:
             num_workers=1,
             preprocess_dir=os.path.dirname(arrow_file),
             entropy_model_name=None,
-            arrow_batch_size=2,
-            s3_profile=None,
-            file_format="arrow",
+            arrow_batch_size=2
         )
     def create_iter(self):
         # The ArrowFileIterator returns BltExample objects.

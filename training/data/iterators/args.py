@@ -1,22 +1,23 @@
 import logging
 import os
 from typing import Any
+from enum import Enum
 
 import numpy as np
 import yaml
 from pydantic import BaseModel, ConfigDict
 import fsspec
 
-from data.iterators.sampling_iterator import SamplingIterator
-from data.iterators.preprocess_iterator import PreprocessIterator
-from data.iterators.arrow_iterator import ArrowFileIterator
-from data.iterators.sequence_iterator import SequenceIterator, SequencePackingArgs
-from data.iterators.packing_iterator import PackingArgs, PackingIterator, PackingMode
+from sampling_iterator import SamplingIterator
+from preprocess_iterator import PreprocessIterator
+from arrow_iterator import ArrowFileIterator
+from sequence_iterator import SequenceIterator, SequencePackingArgs
+from packing_iterator import PackingArgs, PackingIterator, PackingMode
 
-from bytelatent.model.blt import ByteLatentTransformerArgs
+from blt import ByteLatentTransformerArgs
 from optim import OptimArgs
-from training.data.iterators.build_tokenizer import TokenizerArgs
-from training.data.iterators.patching import PatcherArgs, PatchingModeEnum
+from build_tokenizer import TokenizerArgs
+from patching import PatcherArgs, PatchingModeEnum
 
 logger = logging.getLogger()
 
@@ -103,8 +104,7 @@ def distribute_data_to_rank(
                     preprocess_dir=preprocess_dir,
                     dataset_files=None,
                     entropy_model_name=entropy_model_name,
-                    arrow_batch_size=arrow_batch_size,
-                    s3_profile=s3_profile,
+                    arrow_batch_size=arrow_batch_size
                 )
             )
     return rank_to_arrow_iterator_params[rank]
@@ -126,6 +126,9 @@ class PackedCausalTransformerGeneratorArgs(BaseModel):
     device: str | None = "cuda"
 
 
+
+
+
 class DataloaderArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     s3_profile: str | None = None
@@ -140,7 +143,8 @@ class DataloaderArgs(BaseModel):
     prefetch_size: int = 64
     preprocess_dir: str | None = None
     dataset_files: list[str] | None = None
-    entropy_model_name: str | None = "transformer_100m"
+    # entropy_model_name: str | None = "transformer_100m"
+    entropy_model_name: str | None = None
     arrow_batch_size: int = 100
     buffer_size: int = 64
     file_format: str = "arrow"

@@ -1,0 +1,2 @@
+class ByteLatentError(Exception):
+    pass

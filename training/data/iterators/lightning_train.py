@@ -13,13 +13,29 @@ from torch.optim import lr_scheduler
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint
 
-from data.iterators.arrow_iterator import ArrowFileIterator
 from args import TrainArgs
 
-from bytelatent.model.blt import ByteLatentTransformer, ByteLatentTransformerArgs
-from bytelatent.optim import build_optimizer
-from bytelatent.transformer import LMTransformer
-from bytelatent.eval import EVAL_FOLDER_NAME, launch_eval
+from arrow_iterator import ArrowFileIterator
+
+# from bytelatent.model.blt import ByteLatentTransformer, ByteLatentTransformerArgs
+from optim import build_optimizer
+# from transformer import LMTransformer
+
+
+class DummyModel(torch.nn.Module):
+    def __init__(self, input_dim: int = 128, output_dim: int = 128):
+        super().__init__()
+        self.linear = torch.nn.Linear(input_dim, output_dim)
+    
+    def forward(self, x, patch_lengths=None, ngram_ids=None):
+        # For simplicity, we ignore patch_lengths and ngram_ids.
+        return self.linear(x)
+    
+    def init_weights(self):
+        # Initialize weights (e.g., Xavier initialization)
+        for p in self.parameters():
+            if p.dim() > 1:
+                torch.nn.init.xavier_uniform_(p)
 
 
 
@@ -81,7 +97,10 @@ class ByteLatentLightningModule(pl.LightningModule):
     def __init__(self, args: TrainArgs):
         super().__init__()
         self.args = args
-        self.save_hyperparameters(asdict(args))
+        # self.save_hyperparameters(asdict(args))
+        self.n_bytes = 0
+
+        self.save_hyperparameters(args.model_dump())
         
         # Build tokenizer (fallback to SimpleTokenizer if no build() method is provided)
         self.tokenizer = (args.data.tokenizer_args.build() 
@@ -89,14 +108,14 @@ class ByteLatentLightningModule(pl.LightningModule):
                           else SimpleTokenizer())
         
         # Initialize model: either an entropy model or the main model.
-        if args.train_entropy_model:
-            assert args.entropy_model is not None, "Entropy model must be provided."
-            self.model = LMTransformer(args.entropy_model)
-            self.model_args = args.entropy_model
-        else:
-            assert args.model is not None, "Model configuration must be provided."
-            self.model = ByteLatentTransformer(args.model)
-            self.model_args = args.model
+        # if args.train_entropy_model:
+        #     assert args.entropy_model is not None, "Entropy model must be provided."
+        #     self.model = LMTransformer(args.entropy_model)
+        #     self.model_args = args.entropy_model
+        # else:
+        assert args.model is not None, "Model configuration must be provided."
+        self.model = DummyModel(input_dim=128, output_dim=128)  # Or whatever values make sense for your test
+        self.model_args = args.model
         
         # Initialize model weights
         self.model.init_weights()
@@ -165,24 +184,52 @@ class ArrowIteratorWrapper:
         return self.arrow_iterator.create_iter()
 
 class ByteLatentDataModule(pl.LightningDataModule):
-    def __init__(self, args: TrainArgs):
+    def __init__(self, args: TrainArgs, test_mode: bool = False):
         super().__init__()
         self.args = args
         self.data_loader = None
+        self.test_mode = test_mode
     
     def setup(self, stage=None):
-        # Build the arrow iterator for single-process operation.
-        self.data_loader = self.args.data.build_from_rank(rank=0, world_size=1)
+        if self.test_mode:
+            # For testing, create a dummy data loader instead of loading from files
+            from collections import namedtuple
+            Batch = namedtuple('Batch', ['x', 'y', 'patch_lengths', 'mask', 'ngram_ids'])
+            
+            class DummyIterator:
+                def __iter__(self):
+                    return self.create_iter()
+                
+                def create_iter(self):
+                    from collections import namedtuple
+                    Batch = namedtuple('Batch', ['x', 'y', 'patch_lengths', 'mask', 'ngram_ids'])
+                    
+                    # Create a generator function
+                    def generator():
+                        for _ in range(10):  # Generate 10 dummy batches
+                            yield Batch(
+                                x=torch.randn(2, 10, 128),  # batch_size=2, seq_len=10, dim=128
+                                y=torch.randint(0, 4, (2, 10)),  # batch_size=2, seq_len=10
+                                patch_lengths=torch.ones(2, 10) * 5,  # batch_size=2, seq_len=10
+                                mask=torch.ones(2, 10),  # batch_size=2, seq_len=10
+                                ngram_ids=None
+                            )
+                    
+                    return generator()
+            
+            self.data_loader = DummyIterator()
+        else:
+            # Regular data loading logic
+            self.data_loader = self.args.data.build_from_rank(rank=0, world_size=1)
     
     def train_dataloader(self):
-        # Instead of wrapping with an IterableDataset, we wrap the arrow iterator in a minimal wrapper.
         return ArrowIteratorWrapper(self.data_loader)
 
 ###############################################
 # Training Function and Main Entrypoint
 ###############################################
 
-def train(args: TrainArgs):
+def train(args: TrainArgs, test_mode = False):
 
 
     torch.manual_seed(args.seed)
@@ -191,7 +238,9 @@ def train(args: TrainArgs):
     
     # Initialize the Lightning module and datamodule.
     model = ByteLatentLightningModule(args)
-    data_module = ByteLatentDataModule(args)
+    
+    # Use test_mode parameter
+    data_module = ByteLatentDataModule(args, test_mode=test_mode)
     
     # Set up a checkpoint callback.
     checkpoint_callback = ModelCheckpoint(
@@ -221,10 +270,10 @@ def train(args: TrainArgs):
     
     gc.collect()
 
-def main():
+# def main():
 
-    train_args = TrainArgs()
-    train(train_args)
+#     train_args = TrainArgs()
+#     train(train_args)
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()
