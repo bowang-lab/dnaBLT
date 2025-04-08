@@ -18,6 +18,7 @@ from args import TrainArgs
 from arrow_iterator import ArrowFileIterator
 
 # from bytelatent.model.blt import ByteLatentTransformer, ByteLatentTransformerArgs
+# make sure to import the BLT here
 from optim import build_optimizer
 # from transformer import LMTransformer
 
@@ -116,6 +117,8 @@ class ByteLatentLightningModule(pl.LightningModule):
         assert args.model is not None, "Model configuration must be provided."
         self.model = DummyModel(input_dim=128, output_dim=128)  # Or whatever values make sense for your test
         self.model_args = args.model
+
+        ## change this so we call the BLT here and not the dummy model
         
         # Initialize model weights
         self.model.init_weights()
