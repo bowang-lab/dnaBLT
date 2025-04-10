@@ -174,18 +174,6 @@ class ByteLatentLightningModule(pl.LightningModule):
 ###############################################
 # DataModule and Iterator Wrapper (No IterableDataset)
 ###############################################
-
-class ArrowIteratorWrapper:
-    """
-    A minimal wrapper that simply returns a fresh iterator from the arrow iterator each time.
-    """
-    def __init__(self, arrow_iterator: ArrowFileIterator):
-        self.arrow_iterator = arrow_iterator
-
-    def __iter__(self):
-        # Each call returns a new iterator from the arrow iterator.
-        return self.arrow_iterator.create_iter()
-
 class ByteLatentDataModule(pl.LightningDataModule):
     def __init__(self, args: TrainArgs, test_mode: bool = False):
         super().__init__()
@@ -222,11 +210,13 @@ class ByteLatentDataModule(pl.LightningDataModule):
             
             self.data_loader = DummyIterator()
         else:
-            # Regular data loading logic
-            self.data_loader = self.args.data.build_from_rank(rank=0, world_size=1)
+            # Regular data loading logic using Lightning's distributed parameters
+            rank = self.trainer.global_rank if self.trainer is not None else 0
+            world_size = self.trainer.world_size if self.trainer is not None else 1
+            self.data_loader = self.args.data.build_from_rank(rank=rank, world_size=world_size)
     
     def train_dataloader(self):
-        return ArrowIteratorWrapper(self.data_loader)
+        return self.data_loader
 
 ###############################################
 # Training Function and Main Entrypoint
@@ -259,12 +249,13 @@ def train(args: TrainArgs, test_mode = False):
     # Initialize the Lightning Trainer for a single device.
     trainer = pl.Trainer(
         max_steps=args.steps,
+        strategy="ddp",
         accelerator="auto",  # Will use CPU if GPU is unavailable.
-        devices=1,
+        devices=4,
         callbacks=[checkpoint_callback],
         gradient_clip_val=args.optim.clip,
         accumulate_grad_batches=args.grad_acc_steps,
-        precision=32,
+        precision="bf16",
     )
     
     # Train the model.
@@ -279,4 +270,4 @@ if __name__ == "__main__":
     # Global transformer layers,Decoder layers
     #s,2,8977160953.457802,789760,100769792,3948800,1024,256,8,5 
     train_args = TrainArgs()
-    train()
+    train(train_args)

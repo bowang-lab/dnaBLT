@@ -132,10 +132,10 @@ class PackedCausalTransformerGeneratorArgs(BaseModel):
 class DataloaderArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     s3_profile: str | None = None
-    root_dir: str | None = None
-    sources: dict[str, float] = {}
-    batch_size: int = 2
-    seq_len: int = 2048
+    root_dir: str | None = "/cluster/projects/bwanggroup/open-genome"
+    sources: dict[str, float] = {"entropy_rank0": 1}
+    batch_size: int = 16
+    seq_len: int = 8192
     seed: int = 42
     add_bos: bool = True
     add_eos: bool = True
@@ -146,7 +146,7 @@ class DataloaderArgs(BaseModel):
     # entropy_model_name: str | None = "transformer_100m"
     entropy_model_name: str | None = None
     arrow_batch_size: int = 100
-    buffer_size: int = 64
+    buffer_size: int = 16
     file_format: str = "arrow"
 
     pad_to_max_length: bool = True
