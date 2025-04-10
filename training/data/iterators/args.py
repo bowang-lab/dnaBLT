@@ -133,7 +133,7 @@ class DataloaderArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     s3_profile: str | None = None
     root_dir: str | None = "/cluster/projects/bwanggroup/open-genome"
-    sources: dict[str, float] = {"entropy_rank0": 1}
+    sources: dict[str, float] = {"16b1": 1}
     batch_size: int = 16
     seq_len: int = 8192
     seed: int = 42
