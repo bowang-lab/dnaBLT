@@ -249,6 +249,7 @@ def train(args: TrainArgs, test_mode = False):
     # Initialize the Lightning Trainer for a single device.
     trainer = pl.Trainer(
         max_steps=args.steps,
+        reload_dataloaders_every_epoch=False,
         strategy="ddp",
         accelerator="auto",  # Will use CPU if GPU is unavailable.
         devices=4,
