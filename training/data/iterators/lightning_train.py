@@ -11,7 +11,7 @@ import torch.nn.functional as F
 from torch.optim import lr_scheduler
 
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import ModelCheckpoint, Callback
 
 from args import TrainArgs
 
@@ -21,6 +21,127 @@ from bytelatent.model.blt import ByteLatentTransformer
 # make sure to import the BLT here
 from optim import build_optimizer
 # from transformer import LMTransformer
+
+
+class EntropyEvaluationCallback(Callback):
+    def __init__(self, entropy_dataset_path, eval_every_n_steps=200, batch_size=32):
+        """
+        Callback to evaluate the model on the entropy dataset during training
+        
+        Args:
+            entropy_dataset_path: Path to the entropy dataset
+            eval_every_n_steps: Evaluate every N training steps
+            batch_size: Batch size for evaluation
+        """
+        super().__init__()
+        self.entropy_dataset_path = entropy_dataset_path
+        self.eval_every_n_steps = eval_every_n_steps
+        self.batch_size = batch_size
+        self._last_global_step = -1
+    
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        """Run evaluation periodically during training"""
+        global_step = trainer.global_step
+        
+
+        if global_step % self.eval_every_n_steps == 0 and global_step > 0 and global_step != self._last_global_step:
+            self._last_global_step = global_step
+            
+            print(f"\n=== Evaluating on entropy dataset at step {global_step} ===")
+            
+
+            if not hasattr(self, 'data_iterator') or self.data_iterator is None:
+                self.data_iterator = self.load_entropy_dataset()
+            
+
+            training = pl_module.training
+            pl_module.eval()
+            
+            # Run evaluation
+            metrics = self.evaluate_model(pl_module, trainer.accelerator.device)
+            
+
+            for metric_name, metric_value in metrics.items():
+                trainer.logger.log_metrics({f"entropy_{metric_name}": metric_value}, step=global_step)
+            
+
+            print(f"Entropy dataset evaluation results at step {global_step}: {metrics}")
+            
+            if training:
+                pl_module.train()
+    
+    def load_entropy_dataset(self):
+        """Load the entropy dataset"""
+        return ArrowFileIterator(
+            file_path=self.entropy_dataset_path,
+            batch_size=self.batch_size,
+            shuffle=False,
+            repeat=False
+        )
+    
+    def evaluate_model(self, pl_module, device):
+        """Evaluate the model on the entropy dataset"""
+        model = pl_module.model
+        model.eval()
+        
+        total_loss = 0.0
+        total_examples = 0
+        total_tokens = 0
+        total_bpc = 0.0
+        
+
+        max_batches = 500 ## random value, pls update accordingly arnav
+        batch_count = 0
+        
+        with torch.no_grad():
+            for batch in self.data_iterator:
+                # Move batch to device
+                batch_x = batch.x.to(device)
+                batch_y = batch.y.to(device)
+                
+                # Get additional inputs
+                batch_patch_lengths = batch.patch_lengths.to(device) if batch.patch_lengths is not None else None
+                mask = batch.mask.to(device) if batch.mask is not None else None
+                ngram_ids = batch.ngram_ids.to(device) if batch.ngram_ids is not None else None
+                
+                # Forward pass
+                predictions = model(batch_x, patch_lengths=batch_patch_lengths, ngram_ids=ngram_ids)
+                
+                # Compute loss
+                loss, tok_loss = compute_loss(predictions, batch_y, mask, scale=1.0)
+                
+                # Compute tokens count
+                if mask is None:
+                    num_tokens = batch_y.numel()
+                else:
+                    num_tokens = mask.sum().item()
+                
+                # Compute bits per character
+                bpc = loss.item() * np.log2(np.e)
+                
+                # Accumulate metrics
+                total_loss += loss.item() * num_tokens
+                total_tokens += num_tokens
+                total_examples += batch_x.size(0)
+                total_bpc += bpc * num_tokens
+                
+                batch_count += 1
+                if batch_count >= max_batches:
+                    break
+        
+        # Reset the iterator for next evaluation
+        self.data_iterator = self.load_entropy_dataset()
+        
+        # Compute final metrics
+        avg_loss = total_loss / total_tokens if total_tokens > 0 else float('inf')
+        avg_bpc = total_bpc / total_tokens if total_tokens > 0 else float('inf')
+        
+        return {
+            "loss": avg_loss,
+            "bpc": avg_bpc,
+            "examples": total_examples,
+            "tokens": total_tokens,
+        }
 
 
 class DummyModel(torch.nn.Module):
@@ -222,7 +343,7 @@ class ByteLatentDataModule(pl.LightningDataModule):
 # Training Function and Main Entrypoint
 ###############################################
 
-def train(args: TrainArgs, test_mode = False):
+def train(args: TrainArgs, test_mode = False, entropy_dataset_path = None):
 
 
     torch.manual_seed(args.seed)
@@ -235,7 +356,10 @@ def train(args: TrainArgs, test_mode = False):
     # Use test_mode parameter
     data_module = ByteLatentDataModule(args, test_mode=test_mode)
     
-    # Set up a checkpoint callback.
+
+    callbacks = []
+    
+
     checkpoint_callback = ModelCheckpoint(
         dirpath=args.checkpoint.path or os.path.join(args.dump_dir, "checkpoints"),
         filename="{epoch}-{step}",
@@ -243,25 +367,33 @@ def train(args: TrainArgs, test_mode = False):
         every_n_train_steps=args.checkpoint.dump.every,
         save_on_train_epoch_end=False,
     )
+    callbacks.append(checkpoint_callback)
+    
+
+    if entropy_dataset_path:
+        entropy_eval_callback = EntropyEvaluationCallback(
+            entropy_dataset_path=entropy_dataset_path,
+            eval_every_n_steps=200, 
+            batch_size=args.data.batch_size  # Use the same batch size as training
+        )
+        callbacks.append(entropy_eval_callback)
     
    
-    
-    # Initialize the Lightning Trainer for a single device.
+
     trainer = pl.Trainer(
         max_steps=args.steps,
         reload_dataloaders_every_epoch=False,
         strategy="ddp",
-        accelerator="auto",  # Will use CPU if GPU is unavailable.
+        accelerator="auto",
         devices=4,
-        callbacks=[checkpoint_callback],
+        callbacks=callbacks,
         gradient_clip_val=args.optim.clip,
         accumulate_grad_batches=args.grad_acc_steps,
         precision="bf16",
     )
     
-    # Train the model.
+
     trainer.fit(model, datamodule=data_module)
- 
     
     gc.collect()
 
