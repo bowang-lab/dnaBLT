@@ -23,7 +23,7 @@ logger = logging.getLogger()
 
 class SaveEvery(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    every: int = 1000
+    every: int = 500
     keep: int = 0
 
 class CheckpointArgs(BaseModel):
@@ -133,7 +133,7 @@ class DataloaderArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     s3_profile: str | None = None
     root_dir: str | None = "/cluster/projects/bwanggroup/open-genome"
-    sources: dict[str, float] = {"16b1": 1}
+    sources: dict[str, dict[str, float]] = {"train": {"16b1": 1}, "validation": {"entropies_validation": 1}}
     batch_size: int = 16
     seq_len: int = 8192
     seed: int = 42
@@ -159,14 +159,14 @@ class DataloaderArgs(BaseModel):
     patcher_args: PatcherArgs = PatcherArgs()
 
     def _create_sequence_iterators(
-        self, rank: int, world_size: int
+        self, rank: int, world_size: int, mode: str = "train"
     ) -> dict[str, SequenceIterator]:
         sequence_packing_args = SequencePackingArgs(
             output_seq_len=self.seq_len,
             buffer_size=self.buffer_size,
         )
         source_to_sequence_iterator: dict[str, SequenceIterator] = {}
-        for dataset_path in self.sources:
+        for dataset_path in self.sources[mode]:
             shuffle_rng_state = get_rng_state(self.seed + 1, rank, world_size)
             arrow_iterator = distribute_data_to_rank(
                 file_format=self.file_format,
@@ -195,13 +195,13 @@ class DataloaderArgs(BaseModel):
         return source_to_sequence_iterator
 
     def build_from_rank(
-        self, rank: int, world_size: int
+        self, rank: int, world_size: int, mode: str = "train"
     ):
-        source_to_sequence_iterators = self._create_sequence_iterators(rank, world_size)
+        source_to_sequence_iterators = self._create_sequence_iterators(rank, world_size, mode)
         weight_rng_state = get_rng_state(self.seed + 1, rank, world_size)
         sampling_iterator = SamplingIterator(
             rng_state=weight_rng_state,
-            source_to_weight=self.sources,
+            source_to_weight=self.sources[mode],
             source_to_iterator=source_to_sequence_iterators,
         )
         tokenizer = self.tokenizer_args.build()

@@ -43,10 +43,10 @@ class PatcherArgs(BaseModel):
     patching_device: str = "cuda"
     entropy_model_checkpoint_dir: str | None = None
     realtime_patching: bool = False
-    threshold: float = 1.335442066192627
+    threshold: float = 1.2
     threshold_add: float | None = None
-    max_patch_length: int | None = None
-    patch_size: float = 4.5
+    max_patch_length: int | None = 16
+    patch_size: float = None
     patching_batch_size: int = 1
     device: str = "cuda"
     monotonicity: bool = False
