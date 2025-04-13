@@ -306,7 +306,7 @@ class TrainArgs(BaseModel):
     optim: OptimArgs = OptimArgs()
     model: ByteLatentTransformerArgs | None = ByteLatentTransformerArgs()
     # This is only needed for training the entropy model
-    entropy_model: None
+    entropy_model: None = None
     # Instead of training main model, train entropy model
     train_entropy_model: bool = False
 

@@ -1,4 +1,6 @@
+import re
 from tokenizer import Tokenizer
+from bytelatent.blt_tokenizers.sentence_piece_tokenizer import SentencePieceTokenizer
 
 SEP = " "
 BOS_ID: int = 1
@@ -9,6 +11,62 @@ BPE_ID: int = 3
 OFFSET: int = 4
 
 BYTE_UNITS: int = 256
+
+
+def convert_to_bytes(s):
+    # check if the output is a bytes like object of the format <0x00>
+    if re.match(r"<0x[0-9a-fA-F]+>", s):
+        return bytes.fromhex(s[3:-1])
+    else:
+        return bytes(s, "utf-8", errors="ignore")
+
+def text2bytes_bpe_delims(
+    text: str,
+    *,
+    bpe_tokenizer,
+    bpe_id: int,
+    offsetting_special_char: int,
+    add_bos: bool,
+    add_eos: bool,
+):
+    cur_bpe = bpe_tokenizer.encode(text, add_bos=add_bos, add_eos=add_eos)
+    # merge the leading space tokens
+    leading_space_tokens = []
+    other_bpe_tokens = []
+    leading = True
+    for token in cur_bpe:
+        bpe_str = bpe_tokenizer.sp_model.id_to_piece(token)
+        if leading and all(c == "▁" for c in bpe_str):
+            leading_space_tokens.append(bpe_str)
+        else:
+            leading = False
+            other_bpe_tokens.append(bpe_str)
+    cur_bpe_strs = ["".join(leading_space_tokens)] + other_bpe_tokens
+
+    # Remove the '▁' characters
+    bpe_strs = []
+    for i, bpe_str in enumerate(cur_bpe_strs):
+        if (
+            len(bpe_strs) <= 1
+            and all([c == " " for s in bpe_strs for c in s])
+            and not all(c == "▁" for c in bpe_str)
+        ):
+            # Remove leading space for first non space token.
+            bpe_str = bpe_str.replace("▁", "")
+        elif i == 0 and all(c == "▁" for c in bpe_str):
+            bpe_str = " " * (len(text) - len(text.lstrip(" ")))
+        else:
+            bpe_str = bpe_str.replace("▁", " ")
+        if len(bpe_str) > 0:
+            bpe_strs.append(bpe_str)
+    ex_seq = []
+    # Convert bpe tokens to bytes
+    for s in bpe_strs:
+        byte_chunk = convert_to_bytes(s)
+        proc_chunk = [int(unit) for unit in byte_chunk]
+        ex_seq.extend([bpe_id - offsetting_special_char] + proc_chunk)
+
+    return ex_seq
 
 class BltTokenizer(Tokenizer):
     def __init__(

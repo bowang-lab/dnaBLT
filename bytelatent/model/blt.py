@@ -826,7 +826,8 @@ class ByteLatentTransformer(nn.Module, SequenceModelWithOutput):
         self.patching_threshold = args.patching_threshold
         self.dim = args.dim
         self.init_base_std = args.init_base_std
-        self.init_std_factor = InitStdFactor(args.init_std_factor)
+        # self.init_std_factor = InitStdFactor(args.init_std_factor)
+        self.init_std_factor = args.init_std_factor
         self.max_seqlen = args.max_seqlen
 
         # Cross attention configuration

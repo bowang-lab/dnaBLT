@@ -52,7 +52,7 @@ class BaseTransformerArgs(BaseModel):
 
     max_seqlen: int = 1024
 
-    attn_impl: str | None = "sdpa"
+    attn_impl: str | None = "xformers"
     attn_bias_type: str | None = None
     # Special token config
     eos_id: int | None = EOS_ID

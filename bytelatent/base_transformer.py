@@ -586,7 +586,8 @@ class BaseTransformer(nn.Module, SequenceModelWithOutput):
         self.init_base_std = args.init_base_std
         self.attn_impl = args.attn_impl
         self.attn_bias_type = args.attn_bias_type
-        self.init_std_factor = InitStdFactor(args.init_std_factor)
+        # self.init_std_factor = InitStdFactor(args.init_std_factor)
+        self.init_std_factor = args.init_std_factor
         self.max_seqlen = args.max_seqlen
         self.rope_embeddings = RotaryEmbedding(
             theta=args.rope_theta,

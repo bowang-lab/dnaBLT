@@ -43,10 +43,9 @@ class MockTokenizer(Tokenizer):
     ) -> tuple[list[str]]:
         raise NotImplementedError()
 
-
 class TokenizerArgs(BaseModel):
-    name: str = "bytes"
-    init_kwargs: dict[str, Any] | None = None
+    name: str = "blt"
+    init_kwargs: dict[str, Any] | None = {"add_bos": False, "add_eos": False} # due to random contiuguous subsequence sampling. better CE, worse generation tradeoff.
 
     def build(self) -> Tokenizer:
         if self.init_kwargs is None:

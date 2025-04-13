@@ -39,22 +39,6 @@ class DummyModel(torch.nn.Module):
                 torch.nn.init.xavier_uniform_(p)
 
 
-
-###############################################
-# Simple Tokenizer Implementation
-###############################################
-
-class SimpleTokenizer:
-    def __init__(self):
-        self.n_words = 4  # e.g., for ACTG in a genomic context
-        self.unk_token = 78  # unknown token id, e.g., for "N"
-    
-    def encode(self, text: str) -> List[int]:
-        return list(text.encode("utf-8"))
-    
-    def decode(self, tokens: List[int]) -> str:
-        return bytes(tokens).decode("utf-8")
-
 ###############################################
 # Helper Functions
 ###############################################
@@ -104,9 +88,7 @@ class ByteLatentLightningModule(pl.LightningModule):
         self.save_hyperparameters(args.model_dump())
         
         # Build tokenizer (fallback to SimpleTokenizer if no build() method is provided)
-        self.tokenizer = (args.data.tokenizer_args.build() 
-                          if hasattr(args.data.tokenizer_args, "build") 
-                          else SimpleTokenizer())
+        self.tokenizer = args.data.tokenizer_args.build() 
         
         # Initialize model: either an entropy model or the main model.
         # if args.train_entropy_model:

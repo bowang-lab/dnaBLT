@@ -92,7 +92,7 @@ class LengthAwareDistributedBatchSampler(Sampler):
         for i, sample in enumerate(self.dataset):
             quotient, remainder = divmod(len(sample["text"]), self.segment_size)
             # [ACT][GAC][TGA][CT] when start = 0. [A][CTG][ACT][GAC][T] when start = 1. [AC][TGA][CTG][ACT] when start = 2.
-            start = random.randint(0, remainder)
+            start = random.randint(0, remainder) if quotient else 0
             end = remainder - start
             if start:
                 self.segments_per_doc.append((i, 0, start))

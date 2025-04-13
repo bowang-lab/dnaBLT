@@ -405,14 +405,15 @@ class Patcher:
             self.log["tokens"] += patch_lengths.sum().item()
         return patch_lengths, scores
 
+if __name__ == "__main__":
 
-patcher_args = PatcherArgs(patching_mode=PatchingModeEnum.static, patch_size=5) ## patch size is usually 4.5, but for testing we set it to be 5 to avoid the truncation
-patcher = patcher_args.build()
+    patcher_args = PatcherArgs(patching_mode=PatchingModeEnum.static, patch_size=5) ## patch size is usually 4.5, but for testing we set it to be 5 to avoid the truncation
+    patcher = patcher_args.build()
 
 
-tokens = torch.randint(32, 260, (2, 50))  # shape: [batch_size, seq_len]
+    tokens = torch.randint(32, 260, (2, 50))  # shape: [batch_size, seq_len]
 
-# Test patching
-patch_lengths, scores = patcher.patch(tokens, include_next_token=False)
-print("Patch lengths:", patch_lengths)
-print("Sum of patch lengths:", torch.sum(patch_lengths).item(), "expected:", tokens.numel())
+    # Test patching
+    patch_lengths, scores = patcher.patch(tokens, include_next_token=False)
+    print("Patch lengths:", patch_lengths)
+    print("Sum of patch lengths:", torch.sum(patch_lengths).item(), "expected:", tokens.numel())
