@@ -48,7 +48,7 @@ class BaseTransformerArgs(BaseModel):
     rope_use_fp32_in_outer_product: bool = False
 
     init_base_std: float | None = None
-    init_std_factor: InitStdFactor = InitStdFactor.DISABLED
+    init_std_factor: InitStdFactor = InitStdFactor.DISABLED.value
 
     max_seqlen: int = 1024
 
@@ -60,7 +60,7 @@ class BaseTransformerArgs(BaseModel):
 class ByteLatentTransformerArgs(BaseTransformerArgs):
     # Basic model configuration
     seed: int = 42
-    vocab_size: int = -1
+    vocab_size: int = 256
     dim: int = 1024
     n_layers: int = 8
     n_heads: int = 8
@@ -161,7 +161,7 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     # Model architecture params
     entropy_model_checkpoint_dir: str | None = None
     entropy_model_is_ngram_model: bool = False
-    downsampling_by_pooling: str | None = None
+    downsampling_by_pooling: str | None = "max"
     n_heads_global: int = 8
     n_heads_local_decoder: int = 4
     n_heads_local_encoder: int = 4

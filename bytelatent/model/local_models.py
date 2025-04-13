@@ -40,7 +40,7 @@ class LocalModelArgs(BaseTransformerArgs):
     # Local encoder specific dimensions
     dropout: float
     vocab_size: int
-    patch_size: float
+    patch_size: float | None
     sliding_window: int | None
     use_rope: bool
     cross_attn_encoder: bool | None
@@ -162,6 +162,7 @@ class LocalModelBase(nn.Module):
                 InitStdFactor.GLOBAL_DEPTH: (2 * (len(self.layers) + 1)) ** 0.5,
                 InitStdFactor.DIM_RATIO: self.dim / 4096,
                 InitStdFactor.DISABLED: 1.0,
+                "disabled": 1.0,
             }[self.init_std_factor]
 
             layer.init_weights(None, factor)
@@ -201,6 +202,7 @@ class LocalModelBase(nn.Module):
                     InitStdFactor.GLOBAL_DEPTH: (2 * (len(self.layers) + 1)) ** 0.5,
                     InitStdFactor.DIM_RATIO: self.dim / 4096,
                     InitStdFactor.DISABLED: 1.0,
+                    "disabled": 1.0,
                 }[self.init_std_factor]
 
                 layer.init_weights(None, factor)

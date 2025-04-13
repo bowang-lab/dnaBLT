@@ -625,7 +625,7 @@ class BaseTransformer(nn.Module, SequenceModelWithOutput):
                 InitStdFactor.CURRENT_DEPTH: (2 * (depth + 1)) ** 0.5,
                 InitStdFactor.GLOBAL_DEPTH: (2 * (len(self.layers) + 1)) ** 0.5,
                 InitStdFactor.DIM_RATIO: self.dim / 4096,
-                InitStdFactor.DISABLED: 1.0,
+                "disabled": 1.0,
             }[self.init_std_factor]
 
             layer.init_weights(self.init_base_std, factor)
