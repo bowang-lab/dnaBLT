@@ -93,8 +93,8 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     encoder_lm_loss: bool = False
     max_encoder_seq_length: int | None = 8192
     pad_to_max_length: bool = False
-    encoder_enable_byte_ngrams: bool = False
-    encoder_enable_byte_group_hash: bool = False
+    encoder_enable_byte_ngrams: bool = True
+    encoder_enable_byte_group_hash: bool = True
     ngram_vocab_sizes: int | None = None
 
     # Cross attention configurations
@@ -110,9 +110,9 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     cross_attn_init_by_pooling: bool = True
 
     # Encoder hash configurations
-    encoder_hash_byte_group_size: Any | None = None
-    encoder_hash_byte_group_vocab: int = 30000
-    encoder_hash_byte_group_nb_functions: int = 3
+    encoder_hash_byte_group_size: Any | None = [3, 4, 5, 6, 7, 8]
+    encoder_hash_byte_group_vocab: int = 100000
+    encoder_hash_byte_group_nb_functions: int = 4
 
     # Model behavior and optimization
     log_patch_lengths: bool = False
