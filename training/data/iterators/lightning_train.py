@@ -250,14 +250,13 @@ def train(args: TrainArgs, test_mode = False):
 
     trainer = pl.Trainer(
         max_steps=args.steps,
-        reload_dataloaders_every_epoch=False,
         strategy="ddp",
         accelerator="auto",
-        devices=4,
+        devices=1,
         callbacks=checkpoint_callback,
         gradient_clip_val=args.optim.clip,
         accumulate_grad_batches=args.grad_acc_steps,
-        precision="bf16",
+        precision="bf16-mixed",
         val_check_interval=args.checkpoint.dump.every,
     )
     

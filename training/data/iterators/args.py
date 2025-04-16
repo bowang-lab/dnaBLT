@@ -36,7 +36,7 @@ class CheckpointArgs(BaseModel):
     s3_profile: str | None = None
 
 
-TRAIN_DATA_FILE_PATTERN = None
+TRAIN_DATA_FILE_PATTERN = "*.arrow"
 
 
 
@@ -79,6 +79,7 @@ def find_and_sanitize_chunks(
 def distribute_data_to_rank(
     *,
     dataset_path: str,
+    entropy_files: str,
     preprocess_dir: str,
     entropy_model_name: str | None,
     arrow_batch_size: int,
@@ -89,24 +90,23 @@ def distribute_data_to_rank(
     file_pattern: str = TRAIN_DATA_FILE_PATTERN,
 ) -> ArrowFileIterator:
     dataset_chunks = find_and_sanitize_chunks(
-        dataset_path, world_size, file_pattern, s3_profile=s3_profile
+        dataset_path, world_size, entropy_files, s3_profile=s3_profile
     )
     n_workers_per_chunk = world_size // len(dataset_chunks)
     rank_to_arrow_iterator_params = []
-    for chunk_path in dataset_chunks:
-        for worker_id in range(n_workers_per_chunk):
-            rank_to_arrow_iterator_params.append(
-                ArrowFileIterator(
-                    file_path=chunk_path,
-                    file_format=file_format,
-                    worker_id=worker_id,
-                    num_workers=n_workers_per_chunk,
-                    preprocess_dir=preprocess_dir,
-                    dataset_files=None,
-                    entropy_model_name=entropy_model_name,
-                    arrow_batch_size=arrow_batch_size
-                )
+    for worker_id in range(n_workers_per_chunk):
+        rank_to_arrow_iterator_params.append(
+            ArrowFileIterator(
+                file_path=None,
+                file_format=file_format,
+                worker_id=worker_id,
+                num_workers=n_workers_per_chunk,
+                preprocess_dir=preprocess_dir,
+                dataset_files=dataset_chunks,
+                entropy_model_name=entropy_model_name,
+                arrow_batch_size=arrow_batch_size
             )
+        )
     return rank_to_arrow_iterator_params[rank]
 
 
@@ -133,7 +133,7 @@ class DataloaderArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     s3_profile: str | None = None
     root_dir: str | None = "/cluster/projects/bwanggroup/open-genome"
-    sources: dict[str, dict[str, float]] = {"train": {"16b1": 1}, "validation": {"entropies_validation": 1}}
+    sources: dict[str, dict[str, float]] = {"train": {"16b1.arrow": 1}, "validation": {"entropies_validation.arrow": 1}}
     batch_size: int = 16
     seq_len: int = 8192
     seed: int = 42
@@ -170,7 +170,8 @@ class DataloaderArgs(BaseModel):
             shuffle_rng_state = get_rng_state(self.seed + 1, rank, world_size)
             arrow_iterator = distribute_data_to_rank(
                 file_format=self.file_format,
-                dataset_path=os.path.join(self.root_dir, dataset_path),
+                dataset_path=self.root_dir,
+                entropy_files=dataset_path,
                 preprocess_dir=self.preprocess_dir,
                 entropy_model_name=self.entropy_model_name,
                 arrow_batch_size=self.arrow_batch_size,
@@ -187,7 +188,7 @@ class DataloaderArgs(BaseModel):
             )
             sequence_iterator = SequenceIterator(
                 preprocess_iterator,
-                sequence_packing_args=sequence_packing_args,
+                sequence_packing_config=sequence_packing_args,
                 rng_state=shuffle_rng_state,
             )
 

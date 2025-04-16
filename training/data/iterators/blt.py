@@ -95,7 +95,7 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     pad_to_max_length: bool = False
     encoder_enable_byte_ngrams: bool = True
     encoder_enable_byte_group_hash: bool = True
-    ngram_vocab_sizes: int | None = None
+    ngram_vocab_sizes: int | None = 1
 
     # Cross attention configurations
     cross_attn_encoder: bool = True
@@ -156,7 +156,7 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     dim_patch_emb: int | None = None
 
     encoder_ngram_table_dir: str | None = None
-    encoder_ngram_to_size_str: str | None = None
+    encoder_ngram_to_size_str: str | None = "3:16666,4:16666,5:16666,6:16666,7:16666,8:16666"
 
     # Model architecture params
     entropy_model_checkpoint_dir: str | None = None

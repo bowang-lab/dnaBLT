@@ -196,7 +196,6 @@ def truncate_batch(
 class PackingIterator:
     def __init__(
         self,
-        sequences: List[BltSequence],
         sequence_iterator: SequenceIterator,
         packing_args: PackingArgs,
     ):
@@ -208,7 +207,6 @@ class PackingIterator:
             packing_args: Configuration for packing
         """
         self.sequence_iterator = sequence_iterator
-        self.sequences = sequences
         self.packing_args = packing_args
         self.current_idx = 0
 
@@ -230,7 +228,7 @@ class PackingIterator:
     """
 
     def _create_iter_from_bytes(self):
-        sequence_iter = self.sequence_iterator.create_iter()
+        sequence_iter = iter(self.sequence_iterator)
         batch_size = self.packing_args.batch_size
         pad_id = self.packing_args.pad_id
         seq_len = self.packing_args.seq_len
@@ -277,7 +275,7 @@ class PackingIterator:
                 break
 
     def _create_iter_from_patch_lengths(self):
-        sequence_iter = self.sequence_iterator.create_iter()
+        sequence_iter = iter(self.sequence_iterator)
         batch_size = self.packing_args.batch_size
         pad_id = self.packing_args.pad_id
         seq_len = self.packing_args.seq_len
@@ -289,7 +287,7 @@ class PackingIterator:
         while True:
             tokens: List[List[int]] = []
             masks: List[List[bool]] = []
-            patch_lengths = list[list[int]] = []
+            patch_lengths: list[list[int]] = []
             stop_iteration = False
             try:
             # Collect sequences for the batch

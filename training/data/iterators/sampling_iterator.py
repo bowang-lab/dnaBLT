@@ -8,7 +8,7 @@ class SamplingIterator:
         *,
         source_to_weight: Dict[str, float],
         source_to_iterator: Dict[str, SequenceIterator],
-        seed: int = None
+        rng_state: int = None
     ):
         """
         Creates an iterator that samples from multiple sources based on weights.
@@ -18,7 +18,7 @@ class SamplingIterator:
             source_to_iterator: Dictionary mapping source names to their iterators
             seed: Optional random seed for reproducibility
         """
-        self.rng = np.random.default_rng(seed)
+        self.rng = np.random.default_rng()
         self.source_to_weight = source_to_weight
         self.source_to_iterator = source_to_iterator
         

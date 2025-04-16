@@ -27,7 +27,7 @@ class SequenceIterator:
         preprocess_iterator: PreprocessIterator,
         *,
         sequence_packing_config: SequencePackingArgs,
-        seed: Optional[int] = None,
+        rng_state: Optional[int] = None,
     ):
         """Initialize the sequence iterator.
         
@@ -42,9 +42,13 @@ class SequenceIterator:
         self.buffer_size = sequence_packing_config.buffer_size
         
         # Initialize random number generator if seed is provided
-        self.rng = np.random.default_rng(seed) if seed is not None else None
+        if rng_state is None:
+            self.rng = None
+        else:
+            self.rng = np.random.default_rng()
+            self.rng.bit_generator.state = rng_state
 
-    def create_iter(self) -> Generator[BltSequence, None, None]:
+    def __iter__(self) -> Generator[BltSequence, None, None]:
         """Create an iterator that yields packed sequences."""
         example_iter = self.preprocess_iterator.create_iter()
         n_buffer_patches = self.buffer_size * self.output_seq_len
