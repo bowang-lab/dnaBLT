@@ -186,8 +186,8 @@ def truncate_batch(
         assert batch.mask is None or batch.mask.shape[1] == max_length
     if enable_byte_ngrams:
         raise NotImplementedError("Byte n-grams are not implemented")
-        # ngram_ids = np.array(tokenizer.encode_token_ngrams(batch.x))
-        # assert ngram_ids.shape[2] == batch.x.shape[1]
+        ngram_ids = np.array(tokenizer.encode_token_ngrams(batch.x))
+        assert ngram_ids.shape[2] == batch.x.shape[1]
     else:
         ngram_ids = None
     batch.ngram_ids = ngram_ids

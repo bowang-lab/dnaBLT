@@ -121,6 +121,7 @@ class ByteLatentLightningModule(pl.LightningModule):
         batch_patch_lengths = batch.patch_lengths  # may be None
         mask = batch.mask  # may be None
         ngram_ids = batch.ngram_ids  # may be None
+        print("OK WHAT DA HELL IS BATCH", batch)
         if batch_patch_lengths is not None and isinstance(batch_patch_lengths, np.ndarray):
              batch_patch_lengths = torch.tensor(batch_patch_lengths, device=batch_x.device) 
         # Update byte count for metrics based on tokenizer type
