@@ -157,7 +157,7 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
 
     encoder_ngram_table_dir: str | None = None
     encoder_ngram_to_size_str: str | None = "3:16666,4:16666,5:16666,6:16666,7:16666,8:16666"
-
+    
     # Model architecture params
     entropy_model_checkpoint_dir: str | None = None
     entropy_model_is_ngram_model: bool = False

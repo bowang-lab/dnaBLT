@@ -4,7 +4,7 @@ import random
 import gc
 from dataclasses import asdict
 from typing import Any, Optional, Union, List, Dict
-
+from bytelatent.data.ngram_processor import NgramProcessor, parse_ngram_to_size
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -122,6 +122,31 @@ class ByteLatentLightningModule(pl.LightningModule):
         mask = batch.mask  # may be None
         ngram_ids = batch.ngram_ids  # may be None
         print("OK WHAT DA HELL IS BATCH", batch)
+
+        if self.args.model.encoder_enable_byte_ngrams and ngram_ids is None:
+        # Ensure that you have a valid directory for the ngram tables in your args.
+            if not hasattr(self.args.model, "encoder_ngram_table_dir") or self.args.model.encoder_ngram_table_dir is None:
+                raise ValueError("encoder_ngram_table_dir must be provided in the model args if using ngram embeddings.")
+
+        # Parse ngram sizes from your configuration string.
+            ngram_to_size = parse_ngram_to_size(self.args.model.encoder_ngram_to_size_str)
+        # Initialize the NgramProcessor using the table directory and ngram sizes.
+            ngram_processor = NgramProcessor(
+                ngram_table_dir=self.args.model.encoder_ngram_table_dir,
+                ngram_to_size=ngram_to_size
+        )
+        # Convert batch_x to a numpy array.
+            raw_tokens = batch_x.cpu().numpy()
+        # Compute ngram IDs. The output is a list (one per ngram size).
+            ngram_ids_list = ngram_processor.encode_token_ngrams(raw_tokens)
+        # Stack them along a new axis to form a single numpy array.
+            ngram_ids_np = np.stack(ngram_ids_list, axis=0)
+        # Convert to torch tensor and move to the same device as batch_x.
+         
+            ngram_ids = torch.tensor(ngram_ids_np, dtype=torch.int64, device=batch_x.device)
+            self.print(f"Computed ngram_ids with shape: {ngram_ids.shape}")
+
+
         if batch_patch_lengths is not None and isinstance(batch_patch_lengths, np.ndarray):
              batch_patch_lengths = torch.tensor(batch_patch_lengths, device=batch_x.device) 
         # Update byte count for metrics based on tokenizer type
@@ -151,6 +176,32 @@ class ByteLatentLightningModule(pl.LightningModule):
         ngram_ids = batch.ngram_ids  # may be None
         if batch_patch_lengths is not None and isinstance(batch_patch_lengths, np.ndarray):
              batch_patch_lengths = torch.tensor(batch_patch_lengths, device=batch_x.device)
+        if self.args.model.encoder_enable_byte_ngrams and ngram_ids is None:
+        # Ensure that you have a valid directory for the ngram tables in your args.
+            if not hasattr(self.args.model, "encoder_ngram_table_dir") or self.args.model.encoder_ngram_table_dir is None:
+                raise ValueError("encoder_ngram_table_dir must be provided in the model args if using ngram embeddings.")
+        
+        # Parse ngram sizes from your configuration string.
+            ngram_to_size = parse_ngram_to_size(self.args.model.encoder_ngram_to_size_str)
+        # Initialize the NgramProcessor using the table directory and ngram sizes.
+            ngram_processor = NgramProcessor(
+                ngram_table_dir=self.args.model.encoder_ngram_table_dir,
+                ngram_to_size=ngram_to_size
+            )   
+        # Convert batch_x to a numpy array.
+            raw_tokens = batch_x.cpu().numpy()
+        # Compute ngram IDs. The output is a list (one per ngram size).
+            ngram_ids_list = ngram_processor.encode_token_ngrams(raw_tokens)
+        # Stack them along a new axis to form a single numpy array.
+            ngram_ids_np = np.stack(ngram_ids_list, axis=0)
+        # Convert to torch tensor and move to the same device as batch_x.
+            ngram_ids = torch.tensor(ngram_ids_np, dtype=torch.int64, device=batch_x.device)
+        # Optionally log that you computed ngram_ids.
+            self.print(f"Computed ngram_ids with shape: {ngram_ids.shape}")
+
+
+
+
         predictions = self.forward(batch_x, batch_patch_lengths, ngram_ids)
         loss, _ = compute_loss(predictions, batch_y, mask, scale=1.0)
 
