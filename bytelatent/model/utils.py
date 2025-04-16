@@ -102,41 +102,24 @@ def causal_mask(b, h, q_idx, kv_idx):
     return q_idx >= kv_idx
 
 
-# def tokens_to_seqlen(batch: torch.Tensor, eos_id: int):
-#     """
-#     0 0 0 1 0 0 0 1 0 0 0
-#     0 1 0 0 0 1 0 0 0 0 0
-#     -> 4 4 3 2 4 5
-#     """
-#     mask = batch == eos_id
-#     mask[:, -1] = True  # virtual eos at the end of each row
-
-#     # 0 0 0 1 0 0 0 1 0 0 X
-#     # 0 1 0 0 0 1 0 0 0 0 X
-#     row, col = torch.where(mask)
-
-#     # row = 0, 0, 0, 1, 1, 1
-#     # col = 3, 7, 10, 1, 5, 10
-#     seqlens = (col[1:] - col[:-1]) + (row[1:] - row[:-1]) * mask.shape[1]
-#     # seqlens = (4, 3, -9, 4, 5) + (0, 0, 11, 0, 0) = (4, 3, 2, 4, 5)
-#     return [int(col[0].item() + 1)] + seqlens.tolist()
-
 def tokens_to_seqlen(batch: torch.Tensor, eos_id: int):
     """
-    Finds the last eos_id in each row and uses that index (plus one) 
-    as the effective sequence length. If no eos_id is found in a row, 
-    the full row length is used.
+    0 0 0 1 0 0 0 1 0 0 0
+    0 1 0 0 0 1 0 0 0 0 0
+    -> 4 4 3 2 4 5
     """
-    return [batch.size(1)] * batch.size(0)  # [seq_len] * batch_size
+    mask = batch == eos_id
+    mask[:, -1] = True  # virtual eos at the end of each row
 
-    # seqlens = []
-    # for row in batch:
-    #     eos_positions = torch.where(row == eos_id)[0]
-    #     if eos_positions.numel() == 0:
-    #         seqlens.append(row.size(0))
-    #     else:
-    #         seqlens.append(eos_positions[0].item() + 1)
-    # return seqlens
+    # 0 0 0 1 0 0 0 1 0 0 X
+    # 0 1 0 0 0 1 0 0 0 0 X
+    row, col = torch.where(mask)
+
+    # row = 0, 0, 0, 1, 1, 1
+    # col = 3, 7, 10, 1, 5, 10
+    seqlens = (col[1:] - col[:-1]) + (row[1:] - row[:-1]) * mask.shape[1]
+    # seqlens = (4, 3, -9, 4, 5) + (0, 0, 11, 0, 0) = (4, 3, 2, 4, 5)
+    return [int(col[0].item() + 1)] + seqlens.tolist()
 
 
 def create_causal_mask(
@@ -147,16 +130,13 @@ def create_causal_mask(
     eos_id: int | None = None,
     tokens: torch.Tensor | None = None,
     sliding_window: int | None = None,
-    num_heads: int | None = None,
 ):
     if attn_impl == "xformers":
         if attn_bias_type is None:
             return fmha.attn_bias.LowerTriangularMask()
-
         elif attn_bias_type == "causal":
             assert sliding_window is None
             return fmha.attn_bias.LowerTriangularMask()
-
         elif attn_bias_type == "block_causal":
             assert sliding_window is None
             assert eos_id is not None
@@ -164,7 +144,6 @@ def create_causal_mask(
             return fmha.attn_bias.BlockDiagonalCausalMask.from_seqlens(
                 q_seqlen=tokens_to_seqlen(tokens, eos_id)
             )
-
         elif attn_bias_type == "local_block_causal":
             assert sliding_window is not None
             assert eos_id is not None
@@ -172,10 +151,6 @@ def create_causal_mask(
             return fmha.attn_bias.BlockDiagonalCausalMask.from_seqlens(
                 q_seqlen=tokens_to_seqlen(tokens, eos_id)
             ).make_local_attention(sliding_window)
-
-        elif attn_bias_type == "sliding_causal":
-            pass
-
         else:
             return fmha.attn_bias.LocalAttentionFromBottomRightMask(
                 window_left=sliding_window - 1, window_right=0

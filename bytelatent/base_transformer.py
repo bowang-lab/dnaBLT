@@ -16,7 +16,6 @@ from torch.nn.attention.flex_attention import (
 )
 from xformers.ops import AttentionBias, fmha
 
-from bytelatent import probe
 from bytelatent.blt_tokenizers.constants import EOS_ID
 
 logger = logging.getLogger()
@@ -587,7 +586,8 @@ class BaseTransformer(nn.Module, SequenceModelWithOutput):
         self.init_base_std = args.init_base_std
         self.attn_impl = args.attn_impl
         self.attn_bias_type = args.attn_bias_type
-        self.init_std_factor = InitStdFactor(args.init_std_factor)
+        # self.init_std_factor = InitStdFactor(args.init_std_factor)
+        self.init_std_factor = args.init_std_factor
         self.max_seqlen = args.max_seqlen
         self.rope_embeddings = RotaryEmbedding(
             theta=args.rope_theta,
@@ -625,7 +625,7 @@ class BaseTransformer(nn.Module, SequenceModelWithOutput):
                 InitStdFactor.CURRENT_DEPTH: (2 * (depth + 1)) ** 0.5,
                 InitStdFactor.GLOBAL_DEPTH: (2 * (len(self.layers) + 1)) ** 0.5,
                 InitStdFactor.DIM_RATIO: self.dim / 4096,
-                InitStdFactor.DISABLED: 1.0,
+                "disabled": 1.0,
             }[self.init_std_factor]
 
             layer.init_weights(self.init_base_std, factor)

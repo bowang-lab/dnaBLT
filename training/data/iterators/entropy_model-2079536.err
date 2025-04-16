@@ -1,0 +1,106 @@
+WARNING:root:Supported flash-attn versions are >= 2.1.1, <= 2.6.3. Found flash-attn 2.7.3.
+/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/pydantic/main.py:426: UserWarning: Pydantic serializer warnings:
+  Expected `enum` but got `str` with value `'disabled'` - serialized value may not be as expected
+  return self.__pydantic_serializer__.to_python(
+Using bfloat16 Automatic Mixed Precision (AMP)
+GPU available: True (cuda), used: True
+TPU available: False, using: 0 TPU cores
+HPU available: False, using: 0 HPUs
+/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/pytorch_lightning/trainer/connectors/logger_connector/logger_connector.py:76: Starting from v1.9.0, `tensorboardX` has been removed as a dependency of the `pytorch_lightning` package, due to potential conflicts with other packages in the ML ecosystem. For this reason, `logger=True` will use `CSVLogger` as the default logger, unless the `tensorboard` or `tensorboardX` packages are found. Please `pip install lightning[extra]` or one of them to enable TensorBoard support by default
+You are using a CUDA device ('NVIDIA H100 NVL') that has Tensor Cores. To properly utilize them, you should set `torch.set_float32_matmul_precision('medium' | 'high')` which will trade-off precision for performance. For more details, read https://pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html#torch.set_float32_matmul_precision
+Initializing distributed: GLOBAL_RANK: 0, MEMBER: 1/1
+----------------------------------------------------------------------------------------------------
+distributed_backend=nccl
+All distributed processes registered. Starting with 1 processes
+----------------------------------------------------------------------------------------------------
+
+LOCAL_RANK: 0 - CUDA_VISIBLE_DEVICES: [0]
+
+  | Name  | Type                  | Params | Mode 
+--------------------------------------------------------
+0 | model | ByteLatentTransformer | 856 M  | train
+--------------------------------------------------------
+856 M     Trainable params
+0         Non-trainable params
+856 M     Total params
+3,424.663 Total estimated model params size (MB)
+260       Modules in train mode
+0         Modules in eval mode
+SLURM auto-requeueing enabled. Setting signal handlers.
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/cluster/home/t136085uhn/dnaBLT/training/data/iterators/lightning_train.py", line 274, in <module>
+[rank0]:     train(train_args)
+[rank0]:   File "/cluster/home/t136085uhn/dnaBLT/training/data/iterators/lightning_train.py", line 264, in train
+[rank0]:     trainer.fit(model, datamodule=data_module)
+[rank0]:   File "/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/pytorch_lightning/trainer/trainer.py", line 539, in fit
+[rank0]:     call._call_and_handle_interrupt(
+[rank0]:   File "/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/pytorch_lightning/trainer/call.py", line 46, in _call_and_handle_interrupt
+[rank0]:     return trainer.strategy.launcher.launch(trainer_fn, *args, trainer=trainer, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/pytorch_lightning/strategies/launchers/subprocess_script.py", line 105, in launch
+[rank0]:     return function(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/pytorch_lightning/trainer/trainer.py", line 575, in _fit_impl
+[rank0]:     self._run(model, ckpt_path=ckpt_path)
+[rank0]:   File "/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/pytorch_lightning/trainer/trainer.py", line 982, in _run
+[rank0]:     results = self._run_stage()
+[rank0]:               ^^^^^^^^^^^^^^^^^
+[rank0]:   File "/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/pytorch_lightning/trainer/trainer.py", line 1024, in _run_stage
+[rank0]:     self._run_sanity_check()
+[rank0]:   File "/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/pytorch_lightning/trainer/trainer.py", line 1053, in _run_sanity_check
+[rank0]:     val_loop.run()
+[rank0]:   File "/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/pytorch_lightning/loops/utilities.py", line 179, in _decorator
+[rank0]:     return loop_run(self, *args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/pytorch_lightning/loops/evaluation_loop.py", line 144, in run
+[rank0]:     self._evaluation_step(batch, batch_idx, dataloader_idx, dataloader_iter)
+[rank0]:   File "/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/pytorch_lightning/loops/evaluation_loop.py", line 433, in _evaluation_step
+[rank0]:     output = call._call_strategy_hook(trainer, hook_name, *step_args)
+[rank0]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/pytorch_lightning/trainer/call.py", line 323, in _call_strategy_hook
+[rank0]:     output = fn(*args, **kwargs)
+[rank0]:              ^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/pytorch_lightning/strategies/strategy.py", line 411, in validation_step
+[rank0]:     return self._forward_redirection(self.model, self.lightning_module, "validation_step", *args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/pytorch_lightning/strategies/strategy.py", line 641, in __call__
+[rank0]:     wrapper_output = wrapper_module(*args, **kwargs)
+[rank0]:                      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/torch/nn/parallel/distributed.py", line 1643, in forward
+[rank0]:     else self._run_ddp_forward(*inputs, **kwargs)
+[rank0]:          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/torch/nn/parallel/distributed.py", line 1459, in _run_ddp_forward
+[rank0]:     return self.module(*inputs, **kwargs)  # type: ignore[index]
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/pytorch_lightning/strategies/strategy.py", line 634, in wrapped_forward
+[rank0]:     out = method(*_args, **_kwargs)
+[rank0]:           ^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/cluster/home/t136085uhn/dnaBLT/training/data/iterators/lightning_train.py", line 149, in validation_step
+[rank0]:     predictions = self.forward(batch_x, batch_patch_lengths, ngram_ids)
+[rank0]:                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/cluster/home/t136085uhn/dnaBLT/training/data/iterators/lightning_train.py", line 114, in forward
+[rank0]:     return self.model(x, patch_lengths=patch_lengths, ngram_ids=ngram_ids)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/cluster/home/t136085uhn/miniconda3/envs/blt/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/cluster/home/t136085uhn/dnaBLT/bytelatent/model/blt.py", line 941, in forward
+[rank0]:     assert torch.min(patch_lengths) >= 0
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]: TypeError: min(): argument 'input' (position 1) must be Tensor, not numpy.ndarray
+srun: error: node155: task 0: Exited with exit code 1
