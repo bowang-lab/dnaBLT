@@ -149,7 +149,7 @@ class PreprocessIterator:
                 tokens_tensor,
                 include_next_token=False,
                 entropies=entropies_tensor,
-            )[0][0].tolist()
+            )[0][0]
             return patch_lengths, entropies
         
         return None, entropies

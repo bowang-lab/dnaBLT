@@ -2,7 +2,7 @@
 
 from enum import Enum, auto
 from typing import Any, Optional
-
+import numpy as np
 import torch
 from pydantic import ConfigDict, model_validator
 from torch import nn
@@ -17,7 +17,8 @@ from bytelatent.base_transformer import (
 )
 from bytelatent.data.patcher import Patcher, PatcherArgs
 from bytelatent.model.latent_transformer import GlobalTransformer
-from bytelatent.model.striped_hyena2 import GlobalStripedHyena2
+# Commenting out striped hyena2 import
+# from bytelatent.model.striped_hyena2 import GlobalStripedHyena2
 from bytelatent.model.local_models import LocalDecoder, LocalEncoder, LocalModelArgs
 from bytelatent.model.utils import downsample
 from bytelatent.blt_tokenizers.constants import BOE_ID, BOS_ID, EOS_ID, OFFSET, PAD_ID
@@ -184,18 +185,10 @@ def byte_group_hash_function(
     """
     with torch.no_grad():
         bs, seq_len = x.shape
-        # x_numpy = x.numpy()
-        # hash_values = torch.zeros(bs, seq_len, dtype=torch.int64, requires_grad=False)
-        # for i in range(bs):
-        #     for j in range(seq_len):
-        #         start = max(j, j-group_size+1)
-        #         end = j+1
-        #         hash_values[i, j] = hash_array(x_numpy[i, start:end], max_hash)
-
         prefix = torch.zeros(bs, group_size - 1, dtype=torch.int64, device=x.device)
         x = torch.cat([prefix, x], dim=1)
         windows = x.unfold(1, group_size, 1)
-        # hashes = get_rolling_polynomial_hash_fn(hash_func_nb, group_size)(windows)
+        # Using rolling polynomial hash for window values.
         hashes = rolling_polynomial_hash(windows, hash_func_nb)
         hash_values_range = hashes % max_hash
     hash_values_range.requires_grad = False
@@ -250,6 +243,7 @@ def cross_attn_mask(
     block_mask=True,
 ):
     bs = patch_ids.shape[0]
+    device = patch_ids.device
     with torch.no_grad():
         # Create the patch mask
         cross_mask = create_patch_mask_from_ids(
@@ -270,15 +264,16 @@ def cross_attn_mask(
             def patch_mask(b, h, q_idx, kv_idx):
                 return cross_mask[b, q_idx, kv_idx]
 
-            block_mask = create_block_mask(
+            block_mask_obj = create_block_mask(
                 patch_mask,
                 B=bs,
                 H=None,
                 Q_LEN=q_len,
                 KV_LEN=kv_len,
                 _compile=True,
+                device=device
             )
-            return block_mask
+            return block_mask_obj
         else:
             return torch.where(
                 cross_mask, torch.tensor(0.0), torch.tensor(float("-inf"))
@@ -297,71 +292,6 @@ def get_blt_input(
     """
         This function returns X_et, X_gt and X_dt, the encoder, global, and decoder
     tokens respectively.
-
-    Consider the input and target sequences:
-    X=[3,4,5,6,7,eos,bos,8,9,10,eos,bos,11,12,13]
-    Y=[4,5,6,7,eos,bos,8,9,10,eos,bos,11,12,13,14]
-    with patch_size=4
-
-    Note 1: that there will be no special tokens introduced at the patch level.
-    Note 2: X_e needs to be trimmed to be passed to Global
-
-    Current without boe:
-    X_et = [[boe,boe,boe,boe] [3,4,5,6],      [7,eos,bos,8],    [9,10,eos,bos] [11,12,13, pad]]
-    X_g =  [[boe,boe,boe,boe] [3,4,5,6],      [7,eos,bos,8],    [9,10,eos,bos] [11,12,13, pad]] # remove last glob patch
-    X_dt = [[3,4,5,6]         [7,eos,bos,8],  [9,10,eos,bos],   [11,12,13]]
-    Y =    [[4,5,6,7]         [eos,bos,8,9],  [10,eos,bos,11],  [12,13,14]]
-
-    --> lag fix:
-    X_et = [[boe,boe,boe,3]   [4,5,6,7],      [eos,bos,8,9],    [10,eos,bos,11] [12,13,pad,pad]]
-    X_g =  [[boe,boe,boe,3]   [4,5,6,7],      [eos,bos,8,9],    [10,eos,bos,11]]
-    X_dt = [[3,4,5,6]         [7,eos,bos,8],  [9,10,eos,bos],   [11,12,13]]
-    Y =    [[4,5,6,7]    	  [eos,bos,8,9],  [10,eos,bos,11],  [12,13,14]]
-
-    Dynamic (current):
-    X = [3,4,5,6,7,eos,bos,8,9,10,eos,bos]
-    Y = [4,5,6,7,eos,bos,8,9,10,eos,bos,11]
-
-    entropy patching:
-    input: 7, bos, 9, 10
-    pred (high entropy): eos, 8, 10, eos
-
-    X_et = [[boe,3,4,5,6,7,eos,bos,8,9,10,eos,bos]
-    X_g =  [[boe],      [3,4,5,6], [7,eos],[bos,8],[9],     [10,eos]]
-    X_dt = [[3,4,5,6],  [7,eos],   [bos,8],[9],    [10,eos],[bos]]
-    Y =    [4,5,6,7,eos,bos,8,9,10,eos,bos,11]
-
-    --> lag fix no boe (force single byte first patch):
-    X_et = [[3,4,5,6,7,eos,bos,8,9,10,eos,bos,11,12]
-    X_g =  [[3],        [4,5,6,7], [eos,bos],[8,9], [10],       [eos,bos],      [11,12]] # remove last global patch
-    X_dt = [[3,4,5,6],  [7,eos],   [bos,8], [9],    [10,eos],   [bos,11,12]]
-    Y =    [4,5,6,7,    eos,bos,    8,9,    10,     eos,bos,    11,12,13]
-
-    input: 4, 7, bos, 9, 10
-    pred (high entropy): 5, eos, 8, 10, eos
-
-    X_et = [[3,4,5,6,7,eos,bos,8,9,10,eos,bos,11,12]
-    X_g =  [[3],        [4]   ,   [5,6,7], [eos,bos],[8,9], [10],       [eos,bos],      [11,12]] # remove last global patch
-    X_dt = [[3]         [4,5,6],  [7,eos],   [bos,8], [9],    [10,eos],   [bos,11,12]]
-    Y =    [4,]         [5,6,7,    eos,bos,    8,9,    10,     eos,bos,    11,12,13]
-
-    Handle the last byte properly.
-    patch_lengths = [1, 1,         3,      2,         2      1           2               2         1]
-    X_et = [[3,4,5,6,7,eos,bos,8,9,10,eos,bos,11,12]
-    X_g =  [[3],        [4]   ,   [5,6,7], [eos,bos],[8,9], [10],       [eos,bos],      [11,12]] # do not remove last global patch
-    X_dt = [[3]         [4,5,6],  [7,eos],   [bos,8], [9],    [10,eos],   [bos,11]       [12]]
-    Y =    [4,]         [5,6,7,    eos,bos,    8,9,    10,     eos,bos,    11,12,        13]]
-
-
-    bpe delim
-    X_et = [[3,4,5,6,7,<d>,eos,bos,<d>,8,9,<d>,10,<d>,eos,bos,11,12]
-    X_g =  [[3],          [4,5,6,7,<d>],     [eos,bos,<d>], ..
-    X_dt = [[3,4,5,6,7],  [<d>,eos,bos],     [<d>,bos,8], ..
-    Y =    [4,5,6,7,<d>,    eos,bos,<d>       8,9,<d>, ..
-
-
-    Note 1: that there will be no special tokens introduced at the patch level.
-    Note 2: X_e needs to be trimmed to be passed to Global
     """
     batch_size, seq_len = tokens.shape
     local_encoder_tokens = tokens
@@ -371,13 +301,6 @@ def get_blt_input(
         padded_patch = tokens.new(batch_size, nb_boe).fill_(boe_id)
         local_encoder_tokens = torch.cat((padded_patch, local_encoder_tokens), dim=1)
     # global_tokens = tokens.new(batch_size, ((seq_len-1) // patch_size)+1).fill_(boe_id)
-
-    # create global tokens, contains boe tokens and eos
-    # padded_local_encoder_tokens = fill_tokens(local_encoder_tokens, patch_size, boe_id)
-    # patches = padded_local_encoder_tokens.view(batch_size, -1, patch_size)
-    # global_tokens = (patches.eq(eos_id).any(dim=2).int() * eos_id)[:, 1:]
-    # global_tokens += global_tokens.eq(0).int() * boe_id
-    # TODO: fix this when we want to use block causal in the global.
 
     if enforce_patch_size_multiple and local_encoder_tokens.shape[-1] % patch_size != 0:
         local_encoder_tokens = fill_tokens(local_encoder_tokens, patch_size, boe_id)
@@ -414,7 +337,7 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     state_size: int = 128
     # TODO: What is the purpose of this parameter?
     weight_tying: bool = False
-    architecture: str = "vanilla" # For Mamba use "mamba"
+    architecture: str = "vanilla"  # For Mamba use "mamba"
     patch_in_forward: bool = False
 
     # Architecture and dimensions
@@ -562,17 +485,18 @@ class GlobalTransformerArgs(ByteLatentTransformerArgs):
         self.cross_attn_decoder = False
 
 
-class GlobalStripedHyena2Args(ByteLatentTransformerArgs):
-    # Global encoder specific dimensions
-    dim_token_emb: int | None = None
-    dim_patch_emb: int | None = None
-
-    def __post_init__(self):
-        # Override base args with global striped hyena2 specific values
-        self.architecture = "stripedhyena2"
-        self.dim = self.dim_global
-        self.n_layers = self.n_layers_global
-        self.n_heads = self.n_heads_global
+# Commenting out GlobalStripedHyena2Args and its related functionality.
+# class GlobalStripedHyena2Args(ByteLatentTransformerArgs):
+#     # Global encoder specific dimensions
+#     dim_token_emb: int | None = None
+#     dim_patch_emb: int | None = None
+#
+#     def __post_init__(self):
+#         # Override base args with global striped hyena2 specific values
+#         self.architecture = "stripedhyena2"
+#         self.dim = self.dim_global
+#         self.n_layers = self.n_layers_global
+#         self.n_heads = self.n_heads_global
 
 
 class LocalDecoderArgs(ByteLatentTransformerArgs):
@@ -609,23 +533,24 @@ def create_global_transformer(args: ByteLatentTransformerArgs) -> GlobalTransfor
     return GlobalTransformer(global_args)
 
 
-def create_global_striped_hyena2(args: ByteLatentTransformerArgs) -> GlobalStripedHyena2:
-    global_args = args.model_copy(
-        deep=True,
-        update=dict(
-            dim=args.dim_global,
-            n_layers=args.n_layers_global,
-            n_heads=args.n_heads_global,
-            n_kv_heads=args.n_kv_heads_global,
-            local_attention_window_len=None,
-            dim_token_emb=get_global_dim_patch_emb(args),
-            dim_patch_emb=None,
-            cross_attn_encoder=False,
-            cross_attn_decoder=False,
-        ),
-    )
-
-    return GlobalStripedHyena2(global_args)
+# Commenting out the create_global_striped_hyena2 function.
+# def create_global_striped_hyena2(args: ByteLatentTransformerArgs) -> GlobalStripedHyena2:
+#     global_args = args.model_copy(
+#         deep=True,
+#         update=dict(
+#             dim=args.dim_global,
+#             n_layers=args.n_layers_global,
+#             n_heads=args.n_heads_global,
+#             n_kv_heads=args.n_kv_heads_global,
+#             local_attention_window_len=None,
+#             dim_token_emb=get_global_dim_patch_emb(args),
+#             dim_patch_emb=None,
+#             cross_attn_encoder=False,
+#             cross_attn_decoder=False,
+#         ),
+#     )
+#
+#     return GlobalStripedHyena2(global_args)
 
 
 def create_local_encoder(args: ByteLatentTransformerArgs) -> LocalEncoder:
@@ -672,7 +597,6 @@ def create_local_encoder(args: ByteLatentTransformerArgs) -> LocalEncoder:
 
 
 def create_local_decoder(args: ByteLatentTransformerArgs) -> LocalDecoder:
-    # First deep copy the original args
     local_decoder_args = LocalModelArgs(
         dim=args.dim_local_decoder,
         n_layers=args.n_layers_local_decoder,
@@ -779,11 +703,14 @@ def compute_hash_embeddings(
     Returns:
         torch.Tensor: Combined embeddings
     """
+    device = next(local_encoder.parameters()).device
+
+    # Ensure input tokens are on the same device
+    local_encoder_tokens = local_encoder_tokens.to(device)
     if encoder_hash_tok_embedding is None:
         return None
-
     local_encoder_embeds = local_encoder.tok_embeddings(local_encoder_tokens)
-
+    
     i = 0
     for func_nb in range(encoder_hash_byte_group_nb_functions):
         for byte_group_size in encoder_hash_byte_group_size:
@@ -848,10 +775,13 @@ class ByteLatentTransformer(nn.Module, SequenceModelWithOutput):
         # ByteLatent modules
         if args.architecture == "vanilla":
             self.global_transformer = create_global_transformer(args)
-        elif args.architecture == "stripedhyena2":
-            self.global_transformer = create_global_striped_hyena2(args)
+        # Commenting out the stripedhyena2 branch.
+        # elif args.architecture == "stripedhyena2":
+        #     self.global_transformer = create_global_striped_hyena2(args)
         else:
-            raise ValueError(f"Invalid architecture: {args.architecture}")
+            # Default to vanilla if an unsupported architecture is specified.
+            print("Warning: Unsupported architecture specified. Defaulting to vanilla transformer.")
+            self.global_transformer = create_global_transformer(args)
 
         self.local_encoder = create_local_encoder(args)
         self.local_decoder = create_local_decoder(args)
@@ -913,7 +843,6 @@ class ByteLatentTransformer(nn.Module, SequenceModelWithOutput):
         ), f"ngram_ids must be a tensor or None, but was: {type(ngram_ids)}"
 
         bs, N = tokens.shape  # Batch size and sequence length
-
         # Get megabyte inputs
         nb_boe = int(0 if self.patching_mode != "" else self.patch_size - 1)
         local_encoder_tokens, _, local_decoder_tokens = get_blt_input(
@@ -923,6 +852,8 @@ class ByteLatentTransformer(nn.Module, SequenceModelWithOutput):
             patch_size=self.patch_size,
             boe_id=self.boe_id,
         )
+        if isinstance(local_encoder_tokens, np.ndarray):
+            local_encoder_tokens = torch.tensor(local_encoder_tokens, device=tokens.device)
 
         # Patching
         if patch_lengths is None:
@@ -1040,7 +971,8 @@ class ByteLatentTransformer(nn.Module, SequenceModelWithOutput):
         assert (
             decoder_patch_ids.shape[1] == dec_embeds.shape[1]
         ), f"{decoder_patch_ids.shape[1]} != {dec_embeds.shape[1]}"
-
+        print("GOD PLEASE SAVE ME FROM META", h.device)
+        print("god save me AGAIN", decoder_patch_ids.device)
         # Cross-attention decoder
         if not self.cross_attn_decoder:
             h = torch.gather(
@@ -1082,3 +1014,4 @@ class ByteLatentTransformer(nn.Module, SequenceModelWithOutput):
                 a=-3 * emb_std,
                 b=3 * emb_std,
             )
+

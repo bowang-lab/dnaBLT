@@ -14,6 +14,8 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback
 
 from args import TrainArgs
+import torch._dynamo
+torch._dynamo.config.suppress_errors = True
 
 from arrow_iterator import ArrowFileIterator
 
@@ -119,7 +121,8 @@ class ByteLatentLightningModule(pl.LightningModule):
         batch_patch_lengths = batch.patch_lengths  # may be None
         mask = batch.mask  # may be None
         ngram_ids = batch.ngram_ids  # may be None
-        
+        if batch_patch_lengths is not None and isinstance(batch_patch_lengths, np.ndarray):
+             batch_patch_lengths = torch.tensor(batch_patch_lengths, device=batch_x.device) 
         # Update byte count for metrics based on tokenizer type
         if self.args.data.tokenizer_args.name in ["bytes", "blt"]:
             self.n_bytes += batch_y.numel() if mask is None else mask.sum().item()
@@ -145,7 +148,8 @@ class ByteLatentLightningModule(pl.LightningModule):
         batch_patch_lengths = batch.patch_lengths  # may be None
         mask = batch.mask  # may be None
         ngram_ids = batch.ngram_ids  # may be None
-
+        if batch_patch_lengths is not None and isinstance(batch_patch_lengths, np.ndarray):
+             batch_patch_lengths = torch.tensor(batch_patch_lengths, device=batch_x.device)
         predictions = self.forward(batch_x, batch_patch_lengths, ngram_ids)
         loss, _ = compute_loss(predictions, batch_y, mask, scale=1.0)
 
