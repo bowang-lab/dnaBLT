@@ -61,7 +61,7 @@ class BaseTransformerArgs(BaseModel):
     init_base_std: float | None = None
     init_std_factor: InitStdFactor = InitStdFactor.DISABLED
 
-    max_seqlen: int = 1024
+    max_seqlen: int = 12288
 
     attn_impl: str | None = "sdpa"
     attn_bias_type: str | None = None
@@ -139,6 +139,7 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor, seq_dim: int
         torch.Tensor: Reshaped frequency tensor.
     """
     ndim = x.ndim
+    print("debug time", freqs_cis.shape, x.shape[seq_dim])
     assert 0 <= seq_dim < ndim
     assert freqs_cis.shape == (
         x.shape[seq_dim],
@@ -158,8 +159,12 @@ def apply_rotary_emb(
     seq_dim: int,
     freqs_cis: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    print(f"apply_rotary_emb - input shapes: xq={xq.shape}, xk={xk.shape}, seq_dim={seq_dim}, freqs_cis={freqs_cis.shape}")
     xq_ = xq.reshape(*xq.shape[:-1], -1, 1, 2)  # B S H D -> B S H D/2 1 2
     xk_ = xk.reshape(*xk.shape[:-1], -1, 1, 2)  # B S H D -> B S H D/2 1 2
+    print(f"apply_rotary_emb - after reshape: xq_={xq_.shape}, xk_={xk_.shape}")
+    
+    print(f"About to call reshape_for_broadcast with: freqs_cis={freqs_cis.shape}, xq_={xq_.shape}, seq_dim={seq_dim}")
     freqs_cis = reshape_for_broadcast(
         freqs_cis, xq_, seq_dim
     ).float()  # S D/2 2 2 -> 1 S 1 D/2 2 2
@@ -256,7 +261,7 @@ class RotaryEmbedding(torch.nn.Module):
         self,
         theta: float,
         head_dim: int,
-        max_seqlen: int = 1024,
+        max_seqlen: int = 12288,
         rope_use_fp32_in_outer_product: bool = False,
     ):
         super().__init__()
@@ -368,16 +373,26 @@ class Attention(nn.Module):
     ) -> torch.Tensor:
         # B S D
         bsz, seq_len, dim = x.shape
+        print(f"Attention input shape: bsz={bsz}, seq_len={seq_len}, dim={dim}")
+        print(f"freq_cis shape: {freq_cis.shape}")
         xq = self.wq(x.view_as(x))
         xk = self.wk(x.view_as(x))
         xv = self.wv(x.view_as(x))
-
+        
         output_shape = xq.shape
+        print(f"After projection shape: xq={xq.shape}, xk={xk.shape}, xv={xv.shape}")
         # B S D -> B S H D
         xq = xq.view(bsz, seq_len, self.n_heads, self.head_dim)
         xk = xk.view(bsz, seq_len, self.n_kv_heads, self.head_dim)
         xv = xv.view(bsz, seq_len, self.n_kv_heads, self.head_dim)
+        
 
+        print(f"After reshaping: xq={xq.shape}, xk={xk.shape}, xv={xv.shape}")
+        print(f"n_heads={self.n_heads}, n_kv_heads={self.n_kv_heads}, head_dim={self.head_dim}")
+
+    # Add print before the problematic call
+        print(f"Before apply_rotary_emb - xq shape: {xq.shape}, xk shape: {xk.shape}")
+        print(f"Before apply_rotary_emb - freq_cis[0:seq_len] shape: {freq_cis[0:seq_len].shape}")
         xq, xk = apply_rotary_emb(xq, xk, 1, freq_cis[0:seq_len])
 
         # This condition helps us be easily compatible
@@ -611,7 +626,7 @@ class BaseTransformer(nn.Module, SequenceModelWithOutput):
         mask: Optional[Union[BlockMask, AttentionBias, str]] = None,
         attn_impl: str = "sdpa",
     ):
-
+        print("ok what the hell are we doing", self.max_seqlen)
         freq_cis = self.rope_embeddings(seqlen=self.max_seqlen, tok_idx=tok_idx)
 
         for i, layer in enumerate(self.layers):

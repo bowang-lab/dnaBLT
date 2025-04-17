@@ -93,7 +93,7 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     encoder_lm_loss: bool = False
     max_encoder_seq_length: int | None = 8192
     pad_to_max_length: bool = False
-    encoder_enable_byte_ngrams: bool = True
+    encoder_enable_byte_ngrams: bool = False
     encoder_enable_byte_group_hash: bool = True
     ngram_vocab_sizes: int | None = 1
 
