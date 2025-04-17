@@ -91,7 +91,7 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     tie_local_encoder_decoder_logits: bool = False
     use_local_encoder_transformer: bool = True
     encoder_lm_loss: bool = False
-    max_encoder_seq_length: int | None = 8192
+    max_encoder_seq_length: int | None = 12288
     pad_to_max_length: bool = False
     encoder_enable_byte_ngrams: bool = False
     encoder_enable_byte_group_hash: bool = True
