@@ -67,6 +67,7 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     weight_tying: bool = False
     architecture: str = "vanilla" # For Mamba use "mamba"
     patch_in_forward: bool = False
+    max_seqlen: int = 8192
 
     # Architecture and dimensions
     dim_token: int | None = None
@@ -100,8 +101,8 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     # Cross attention configurations
     cross_attn_encoder: bool = True
     cross_attn_decoder: bool = True
-    cross_attn_window_encoder: int | None = None
-    cross_attn_window_decoder: int | None = None
+    cross_attn_window_encoder: int | None = 512
+    cross_attn_window_decoder: int | None = 512
     cross_attn_k: int | None = 2
     cross_attn_nheads: int | None = 4
     cross_attn_all_layers_decoder: bool = True
@@ -112,7 +113,7 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     # Encoder hash configurations
     encoder_hash_byte_group_size: Any | None = [3, 4, 5, 6, 7, 8]
     encoder_hash_byte_group_vocab: int = 100000
-    encoder_hash_byte_group_nb_functions: int = 4
+    encoder_hash_byte_group_nb_functions: int = 1
 
     # Model behavior and optimization
     log_patch_lengths: bool = False

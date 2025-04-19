@@ -852,8 +852,6 @@ class ByteLatentTransformer(nn.Module, SequenceModelWithOutput):
             patch_size=self.patch_size,
             boe_id=self.boe_id,
         )
-        if isinstance(local_encoder_tokens, np.ndarray):
-            local_encoder_tokens = torch.tensor(local_encoder_tokens, device=tokens.device)
 
         # Patching
         if patch_lengths is None:

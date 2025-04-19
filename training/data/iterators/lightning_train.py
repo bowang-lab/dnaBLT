@@ -276,6 +276,43 @@ class ByteLatentDataModule(pl.LightningDataModule):
     
     def val_dataloader(self):
         return self.valid_data_loader
+    
+    def transfer_batch_to_device(self, batch, device, dataloader_idx):
+        """
+        Override LightningModule to move all batch elements to the correct device.
+        """
+        batch_type = type(batch)
+        # Move x
+        if not torch.is_tensor(batch.x):
+            x = torch.tensor(batch.x, device=device)
+        else:
+            x = batch.x.to(device)
+        # Move y
+        if not torch.is_tensor(batch.y):
+            y = torch.tensor(batch.y, device=device)
+        else:
+            y = batch.y.to(device)
+        # Move patch_lengths
+        patch_lengths = batch.patch_lengths
+        if not torch.is_tensor(patch_lengths):
+            patch_lengths = torch.tensor(patch_lengths, device=device)
+        else:
+            patch_lengths = patch_lengths.to(device)
+        # Move mask
+        mask = batch.mask
+        if not torch.is_tensor(mask):
+            mask = torch.tensor(mask, device=device)
+        else:
+            mask = mask.to(device)
+        # Move ngram_ids
+        ngram_ids = batch.ngram_ids
+        if ngram_ids is not None:
+            if not torch.is_tensor(ngram_ids):
+                ngram_ids = torch.tensor(ngram_ids, device=device)
+            else:
+                ngram_ids = ngram_ids.to(device)
+        # Reconstruct batch with all tensors on the correct device
+        return batch_type(x=x, y=y, patch_lengths=patch_lengths, mask=mask, ngram_ids=ngram_ids)
 
 
 ###############################################
