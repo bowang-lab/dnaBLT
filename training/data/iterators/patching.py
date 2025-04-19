@@ -146,7 +146,6 @@ def patch_lengths_from_start_ids(patch_start_ids, seq_len):
     last_ids = torch.full_like(patch_start_ids[:, :1], seq_len - 1)
     patch_end_ids = torch.cat((patch_start_ids[:, 1:] - 1, last_ids), dim=1)
     patch_lengths = patch_end_ids - patch_start_ids + 1
-    print("patch_start_ids:", patch_start_ids)
     assert torch.all(patch_lengths >= 0), f"{patch_lengths}"
     assert not check_non_zero_after_zero(patch_lengths), f"{patch_lengths}"
     return patch_lengths

@@ -12,6 +12,7 @@ from torch.optim import lr_scheduler
 
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback
+from pytorch_lightning.loggers import CSVLogger
 
 from args import TrainArgs
 import torch._dynamo
@@ -22,8 +23,6 @@ from arrow_iterator import ArrowFileIterator
 from bytelatent.model.blt import ByteLatentTransformer
 # make sure to import the BLT here
 from optim import build_optimizer
-# from transformer import LMTransformer
-
 
 class DummyModel(torch.nn.Module):
     def __init__(self, input_dim: int = 128, output_dim: int = 128):
@@ -133,7 +132,7 @@ class ByteLatentLightningModule(pl.LightningModule):
         batch_patch_lengths = batch.patch_lengths  # may be None
         mask = batch.mask  # may be None
         ngram_ids = batch.ngram_ids  # may be None
-        print("OK WHAT DA HELL IS BATCH", batch)
+
 
         if self.args.model.encoder_enable_byte_ngrams and ngram_ids is None:
         # Ensure that you have a valid directory for the ngram tables in your args.

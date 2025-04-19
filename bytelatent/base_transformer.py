@@ -139,7 +139,6 @@ def reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor, seq_dim: int
         torch.Tensor: Reshaped frequency tensor.
     """
     ndim = x.ndim
-    print("debug time", freqs_cis.shape, x.shape[seq_dim])
     assert 0 <= seq_dim < ndim
     assert freqs_cis.shape == (
         x.shape[seq_dim],
@@ -159,12 +158,8 @@ def apply_rotary_emb(
     seq_dim: int,
     freqs_cis: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    print(f"apply_rotary_emb - input shapes: xq={xq.shape}, xk={xk.shape}, seq_dim={seq_dim}, freqs_cis={freqs_cis.shape}")
     xq_ = xq.reshape(*xq.shape[:-1], -1, 1, 2)  # B S H D -> B S H D/2 1 2
     xk_ = xk.reshape(*xk.shape[:-1], -1, 1, 2)  # B S H D -> B S H D/2 1 2
-    print(f"apply_rotary_emb - after reshape: xq_={xq_.shape}, xk_={xk_.shape}")
-    
-    print(f"About to call reshape_for_broadcast with: freqs_cis={freqs_cis.shape}, xq_={xq_.shape}, seq_dim={seq_dim}")
     freqs_cis = reshape_for_broadcast(
         freqs_cis, xq_, seq_dim
     ).float()  # S D/2 2 2 -> 1 S 1 D/2 2 2
@@ -373,26 +368,18 @@ class Attention(nn.Module):
     ) -> torch.Tensor:
         # B S D
         bsz, seq_len, dim = x.shape
-        print(f"Attention input shape: bsz={bsz}, seq_len={seq_len}, dim={dim}")
-        print(f"freq_cis shape: {freq_cis.shape}")
         xq = self.wq(x.view_as(x))
         xk = self.wk(x.view_as(x))
         xv = self.wv(x.view_as(x))
         
         output_shape = xq.shape
-        print(f"After projection shape: xq={xq.shape}, xk={xk.shape}, xv={xv.shape}")
         # B S D -> B S H D
         xq = xq.view(bsz, seq_len, self.n_heads, self.head_dim)
         xk = xk.view(bsz, seq_len, self.n_kv_heads, self.head_dim)
         xv = xv.view(bsz, seq_len, self.n_kv_heads, self.head_dim)
         
 
-        print(f"After reshaping: xq={xq.shape}, xk={xk.shape}, xv={xv.shape}")
-        print(f"n_heads={self.n_heads}, n_kv_heads={self.n_kv_heads}, head_dim={self.head_dim}")
-
     # Add print before the problematic call
-        print(f"Before apply_rotary_emb - xq shape: {xq.shape}, xk shape: {xk.shape}")
-        print(f"Before apply_rotary_emb - freq_cis[0:seq_len] shape: {freq_cis[0:seq_len].shape}")
         xq, xk = apply_rotary_emb(xq, xk, 1, freq_cis[0:seq_len])
 
         # This condition helps us be easily compatible

@@ -969,8 +969,6 @@ class ByteLatentTransformer(nn.Module, SequenceModelWithOutput):
         assert (
             decoder_patch_ids.shape[1] == dec_embeds.shape[1]
         ), f"{decoder_patch_ids.shape[1]} != {dec_embeds.shape[1]}"
-        print("GOD PLEASE SAVE ME FROM META", h.device)
-        print("god save me AGAIN", decoder_patch_ids.device)
         # Cross-attention decoder
         if not self.cross_attn_decoder:
             h = torch.gather(

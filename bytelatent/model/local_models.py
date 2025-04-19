@@ -258,7 +258,6 @@ class LocalEncoder(LocalModelBase):
     ):
         """ """
         bs, seqlen = tokens.shape
-        print("PLEASE GOD HELP ME", seqlen)
         if mask is None:
             mask = create_causal_mask(
                 seqlen,
