@@ -29,7 +29,7 @@ except (ImportError, ModuleNotFoundError):
     RMSNorm = nn.RMSNorm
 
 if int(os.environ.get("BLT_ALLOW_MISSING_FLEX_ATTENTION", False)) == 0:
-    flex_attention_comp = torch.compile(flex_attention)
+    flex_attention_comp = torch.compile(flex_attention, dynamic=False)
 else:
     flex_attention_comp = None
 

@@ -107,8 +107,20 @@ class ByteLatentLightningModule(pl.LightningModule):
         # Initialize model weights
         self.model.init_weights()
         
+    def on_after_backward(self):
+        optimizer = self.optimizers()
+        # Get Lightning’s GradScaler if it exists (only in 16‑mixed)
+        scaler = getattr(self.trainer, "scaler", None)
+        if scaler is not None:
+            # unscale exactly once before clipping
+            scaler.unscale_(optimizer)
 
-        
+        # now clip the (unscaled) gradients of your model
+        torch.nn.utils.clip_grad_norm_(
+            self.parameters(), 
+            max_norm=self.args.optim.clip
+        )
+
     def forward(self, x, patch_lengths=None, ngram_ids=None):
         if self.args.train_entropy_model:
             return self.model(x)
@@ -325,6 +337,8 @@ def train(args: TrainArgs, test_mode = False):
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     random.seed(args.seed)
+
+    torch._dynamo.config.optimize_ddp = False # we may want to remove flex attention to use optimize_ddp
     
     # Initialize the Lightning module and datamodule.
     model = ByteLatentLightningModule(args)
@@ -347,7 +361,7 @@ def train(args: TrainArgs, test_mode = False):
         accelerator="auto",
         devices=1,
         callbacks=checkpoint_callback,
-        gradient_clip_val=args.optim.clip,
+        gradient_clip_val=None, # must be none for fused adam
         accumulate_grad_batches=args.grad_acc_steps,
         precision="bf16-mixed",
         val_check_interval=args.checkpoint.dump.every,

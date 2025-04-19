@@ -134,7 +134,7 @@ class DataloaderArgs(BaseModel):
     s3_profile: str | None = None
     root_dir: str | None = "./outputs"
     sources: dict[str, dict[str, float]] = {"train": {"entropies_validation.arrow": 1}, "validation": {"entropies_validation.arrow": 1}}
-    batch_size: int = 16
+    batch_size: int = 4
     seq_len: int = 8192
     seed: int = 42
     add_bos: bool = True
