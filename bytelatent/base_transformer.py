@@ -613,7 +613,6 @@ class BaseTransformer(nn.Module, SequenceModelWithOutput):
         mask: Optional[Union[BlockMask, AttentionBias, str]] = None,
         attn_impl: str = "sdpa",
     ):
-        print("ok what the hell are we doing", self.max_seqlen)
         freq_cis = self.rope_embeddings(seqlen=self.max_seqlen, tok_idx=tok_idx)
 
         for i, layer in enumerate(self.layers):

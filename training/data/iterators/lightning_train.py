@@ -177,6 +177,8 @@ class ByteLatentLightningModule(pl.LightningModule):
         # Forward pass and loss computation
         pred = self.forward(batch_x, batch_patch_lengths, ngram_ids)
         loss, tok_loss = compute_loss(pred, batch_y, mask, scale=1.0)
+        self.log("train_entropy_loss", loss, on_step=True, on_epoch=False, prog_bar=False)
+        self.log("train_entropy_bpc", loss * np.log2(np.e), on_step=True, on_epoch=False, prog_bar=False)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -346,24 +348,27 @@ def train(args: TrainArgs, test_mode = False):
     data_module = ByteLatentDataModule(args, test_mode=test_mode)
     
 
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=args.checkpoint.path or os.path.join(args.dump_dir, "checkpoints"),
-        filename="{epoch}-{step}",
-        save_top_k=args.checkpoint.dump.keep if args.checkpoint.dump.keep > 0 else -1,
-        every_n_train_steps=args.checkpoint.dump.every,
-        save_on_train_epoch_end=False,
-    )
+    # checkpoint_callback = ModelCheckpoint(
+    #     dirpath=args.checkpoint.path or os.path.join(args.dump_dir, "checkpoints"),
+    #     filename="{epoch}-{step}",
+    #     save_top_k=args.checkpoint.dump.keep if args.checkpoint.dump.keep > 0 else -1,
+    #     every_n_train_steps=args.checkpoint.dump.every,
+    #     save_on_train_epoch_end=False,
+    # )
 
     trainer = pl.Trainer(
         max_steps=args.steps,
         strategy="ddp",
         accelerator="auto",
         devices=1,
-        callbacks=checkpoint_callback,
+        # callbacks=checkpoint_callback,
         gradient_clip_val=None, # must be none for fused adam
         accumulate_grad_batches=args.grad_acc_steps,
         precision="bf16-mixed",
         val_check_interval=args.checkpoint.dump.every,
+        logger = CSVLogger(save_dir="./lightning_logs", name="logs"),
+        enable_progress_bar=False,
+        log_every_n_steps=1
     )
     
 
