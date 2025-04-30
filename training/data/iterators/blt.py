@@ -61,38 +61,38 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
     # Basic model configuration
     seed: int = 42
     vocab_size: int = 256
-    dim: int = 1024
-    n_layers: int = 8
+    dim: int = 512
+    n_layers: int = 9
     n_heads: int = 8
     weight_tying: bool = False
     architecture: str = "vanilla" # For Mamba use "mamba"
     patch_in_forward: bool = False
-    max_seqlen: int = 8192
+    max_seqlen: int = 4096
 
     # Architecture and dimensions
     dim_token: int | None = None
-    dim_global: int = 1024
+    dim_global: int = 512
     dim_local_decoder: int = 256
     dim_local_encoder: int = 256
-    n_layers_global: int = 8
+    n_layers_global: int = 9
     n_layers_local_decoder: int = 5
     n_layers_local_encoder: int = 1
 
     # Tokenization and patching
     patch_size: float | None = None
-    patching_mode: str | None = "entropy"
-    patching_threshold: float | None = 1.2
+    patching_mode: str | None = None
+    patching_threshold: float | None = None
     patching_threshold_add: float | None = None
     monotonicity: bool = False
     patching_batch_size: int = 1
     patching_device: str = "cuda"
-    max_patch_length: int | None = 16
+    max_patch_length: int | None = None
 
     # Encoder/Decoder configuration
     tie_local_encoder_decoder_logits: bool = False
     use_local_encoder_transformer: bool = True
     encoder_lm_loss: bool = False
-    max_encoder_seq_length: int | None = 12288
+    max_encoder_seq_length: int | None = 8192
     pad_to_max_length: bool = False
     encoder_enable_byte_ngrams: bool = False
     encoder_enable_byte_group_hash: bool = True

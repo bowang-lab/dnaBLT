@@ -134,8 +134,8 @@ class DataloaderArgs(BaseModel):
     s3_profile: str | None = None
     root_dir: str | None = "./outputs"
     sources: dict[str, dict[str, float]] = {"train": {"entropies_validation.arrow": 1}, "validation": {"entropies_validation.arrow": 1}}
-    batch_size: int = 4
-    seq_len: int = 8192
+    batch_size: int = 16
+    seq_len: int = 4096
     seed: int = 42
     add_bos: bool = True
     add_eos: bool = True
@@ -146,11 +146,11 @@ class DataloaderArgs(BaseModel):
     # entropy_model_name: str | None = "transformer_100m"
     entropy_model_name: str | None = None
     arrow_batch_size: int = 100
-    buffer_size: int = 16
+    buffer_size: int = 64 # 512
     file_format: str = "arrow"
 
     pad_to_max_length: bool = True
-    max_encoder_seq_length: int = 12288
+    max_encoder_seq_length: int = 8192
     enable_byte_ngrams: bool = False
 
     add_patches: bool = True
@@ -292,7 +292,7 @@ class TrainArgs(BaseModel):
 
     # Number of gradient accumulation steps
     # Total batch size is batch_size*grad_acc_steps
-    grad_acc_steps: int = 16
+    grad_acc_steps: int = 8
 
     gc_collect_freq: int = 1000
     probe_freq: int | None = None

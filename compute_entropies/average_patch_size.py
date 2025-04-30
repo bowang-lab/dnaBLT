@@ -31,7 +31,7 @@ def block_lengths(mask):
     return blocks
 
 # Open the Arrow file and load the DataFrame
-with pa.memory_map("entropies_rank0.arrow", "r") as source:
+with pa.memory_map("outputs/entropies_validation.arrow", "r") as source:
     reader = pa.ipc.open_file(source)
     df1 = reader.read_pandas()
 
@@ -39,10 +39,12 @@ with pa.memory_map("entropies_rank0.arrow", "r") as source:
 average_block_lengths = []
 all_block_lengths = []
 
+ENTROPY_THRESHOLD = 1.27
+
 for i in tqdm(range(len(df1))):
     # Create a boolean mask for tokens under the threshold.
     # Use the length of the text to truncate the entropies list.
-    mask = (df1.iloc[i]['entropies'][:len(df1.iloc[i]['text'])] < 1.335442066192627).tolist()
+    mask = (df1.iloc[i]['entropies'][:len(df1.iloc[i]['text'])] < ENTROPY_THRESHOLD).tolist()
     blocks = block_lengths(mask)
     # Save the block lengths
     all_block_lengths.extend(blocks)

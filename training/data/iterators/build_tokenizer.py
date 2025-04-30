@@ -45,7 +45,7 @@ class MockTokenizer(Tokenizer):
 
 class TokenizerArgs(BaseModel):
     name: str = "blt"
-    init_kwargs: dict[str, Any] | None = {"add_bos": False, "add_eos": False} # due to random contiuguous subsequence sampling. better CE, worse generation tradeoff.
+    init_kwargs: dict[str, Any] | None = {"add_bos": False, "add_eos": True} 
 
     def build(self) -> Tokenizer:
         if self.init_kwargs is None:

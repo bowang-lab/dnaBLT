@@ -195,6 +195,17 @@ class GlobalTransformer(BaseTransformer):
 
         h = F.dropout(h, p=self.dropout, training=self.training)
 
+        if tok_idx is None:
+            eos_mask = (tokens == self.eos_id)  # (bs, seqlen)
+            start_mask = torch.zeros_like(eos_mask) 
+            start_mask[:, 0] = 1
+            start_mask[:, 1:] = eos_mask[:, :-1]
+            arange = torch.arange(seqlen, device=tokens.device).expand(bs, seqlen)
+            starts_only = torch.where(start_mask, arange, torch.full_like(arange, -1))
+            last_start = torch.cummax(starts_only, dim=1).values
+            tok_idx = arange - last_start
+
+
         h = super().forward(h, tok_idx=tok_idx, mask=mask, attn_impl=self.attn_impl)
         return h, cache
 
