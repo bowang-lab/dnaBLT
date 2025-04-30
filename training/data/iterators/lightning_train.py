@@ -178,7 +178,6 @@ class ByteLatentLightningModule(pl.LightningModule):
         pred = self.forward(batch_x, batch_patch_lengths, ngram_ids)
         loss, tok_loss = compute_loss(pred, batch_y, mask, scale=1.0)
         self.log("train_entropy_loss", loss, on_step=True, on_epoch=False, prog_bar=False)
-        self.log("train_entropy_bpc", loss * np.log2(np.e), on_step=True, on_epoch=False, prog_bar=False)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -226,7 +225,6 @@ class ByteLatentLightningModule(pl.LightningModule):
 
         # Log validation metrics every step. Use prog_bar=True when on Chimera (won't work on UHN)
         self.log("val_entropy_loss", loss, on_step=True, on_epoch=False, prog_bar=False, sync_dist=True)
-        self.log("val_entropy_bpc", loss * np.log2(np.e), on_step=True, on_epoch=False, prog_bar=False, sync_dist=True)
 
     def configure_optimizers(self):
         optimizer, scheduler = build_optimizer(self.model, self.args.optim, self.args.steps)

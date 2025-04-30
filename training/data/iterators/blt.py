@@ -80,7 +80,7 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
 
     # Tokenization and patching
     patch_size: float | None = None
-    patching_mode: str | None = None
+    patching_mode: str | None = "entropy"
     patching_threshold: float | None = None
     patching_threshold_add: float | None = None
     monotonicity: bool = False
