@@ -269,7 +269,16 @@ class LocalEncoder(LocalModelBase):
             )
 
         h = self.apply_embedding(tokens, embeds)
-        freqs_cis = self.rope(seqlen=seqlen) if self.use_rope else None
+        eos_mask = (tokens == self.eos_id)  # (bs, seqlen)
+        start_mask = torch.zeros_like(eos_mask) 
+        start_mask[:, 0] = 1
+        start_mask[:, 1:] = eos_mask[:, :-1]
+        arange = torch.arange(seqlen, device=tokens.device).expand(bs, seqlen)
+        starts_only = torch.where(start_mask, arange, torch.full_like(arange, -1))
+        last_start = torch.cummax(starts_only, dim=1).values
+        pos_ids = arange - last_start
+
+        freqs_cis = self.rope(tok_idx=pos_ids) if self.use_rope else None
 
         h = F.dropout(h, p=self.dropout, training=self.training)
 
@@ -380,7 +389,16 @@ class LocalDecoder(LocalModelBase):
         if patch_embeds is not None and not self.cross_attn_decoder:
             h = h + patch_embeds
 
-        freqs_cis = self.rope(seqlen=seqlen) if self.use_rope else None
+        eos_mask = (tokens == self.eos_id)  # (bs, seqlen)
+        start_mask = torch.zeros_like(eos_mask) 
+        start_mask[:, 0] = 1
+        start_mask[:, 1:] = eos_mask[:, :-1]
+        arange = torch.arange(seqlen, device=tokens.device).expand(bs, seqlen)
+        starts_only = torch.where(start_mask, arange, torch.full_like(arange, -1))
+        last_start = torch.cummax(starts_only, dim=1).values
+        pos_ids = arange - last_start
+
+        freqs_cis = self.rope(tok_idx=pos_ids) if self.use_rope else None
 
         h = F.dropout(h, p=self.dropout, training=self.training)
         for i, layer in enumerate(self.layers):

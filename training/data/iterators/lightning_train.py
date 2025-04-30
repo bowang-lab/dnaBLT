@@ -368,7 +368,7 @@ def train(args: TrainArgs, test_mode = False):
         val_check_interval=args.checkpoint.dump.every,
         logger = CSVLogger(save_dir="./lightning_logs", name="logs"),
         enable_progress_bar=False,
-        log_every_n_steps=1
+        log_every_n_steps=50
     )
     
 
@@ -377,9 +377,40 @@ def train(args: TrainArgs, test_mode = False):
     gc.collect()
 
 if __name__ == "__main__":
-    # FLOPs,Patch size,Tokens,Encoder parameters,Global transformer parameters,
-    # Decoder parameters,Global transformer dimension,Encoder/Decoder dimension,
-    # Global transformer layers,Decoder layers
-    #s,2,8977160953.457802,789760,100769792,3948800,1024,256,8,5 
+    """
+
+        tokens=18_000_000_000,
+        seq_len=8192,
+        patch_size=2,
+        hidden_state_g=512,
+        layers_g=9,
+        hidden_state_e=256,
+        layers_e=1,
+        window_e=512,
+        hidden_state_d=256,
+        layers_d=5,
+        window_d=512,
+        ratio_patchdim2bytedim=2,
+        vocab=4,
+        feed_forward_mult=2.5,
+    
+    vs.
+
+        tokens=12_400_000_000,
+        seq_len=8192,
+        patch_size=1,
+        hidden_state_g=448,
+        layers_g=7,
+        hidden_state_e=192,
+        layers_e=1,
+        window_e=512,
+        hidden_state_d=192,
+        layers_d=5,
+        window_d=512,
+        ratio_patchdim2bytedim=2,
+        vocab=4,
+        feed_forward_mult=2.5,
+
+    """
     train_args = TrainArgs()
     train(train_args)
