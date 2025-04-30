@@ -298,10 +298,10 @@ class TrainArgs(BaseModel):
     probe_freq: int | None = None
 
     # Nb optimizer steps to take | 9B token run / 2M token batch = 4500 steps.
-    steps: int = 4500 
+    steps: int = 17166 
     # If not None, halt training after this many steps,
     # useful for debugging
-    max_steps: int | None = 4500
+    max_steps: int | None = 17166
 
     data: DataloaderArgs = DataloaderArgs()
     optim: OptimArgs = OptimArgs()

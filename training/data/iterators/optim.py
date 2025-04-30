@@ -21,7 +21,7 @@ class OptimArgs(BaseModel):
     clip: float = 1.0
 
     scheduler: str = "cosine"
-    warmup: int = 45
+    warmup: int = 172
     lr_min_ratio: float = 0.1
     cycle_length: float = 1.0
     cosine_theta: float = 1.0
