@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH -c 50
 #SBATCH --gres=gpu:1
-#SBATCH --job-name=entropy_model
+#SBATCH --job-name=dnablt
 #SBATCH --output=%x-%j.out
 #SBATCH --error=%x-%j.err
-#SBATCH -t 1:00:00
+#SBATCH -t 2:00:00
 #SBATCH -p gpu_bwanggroup
 #SBATCH --mem=100G
 #SBATCH --reservation=h100
