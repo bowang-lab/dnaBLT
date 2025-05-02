@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Generator, List, Optional
 from pydantic import BaseModel
 from sequence_iterator import SequenceIterator
+import time 
 
 import numpy as np
 
@@ -291,9 +292,12 @@ class PackingIterator:
             stop_iteration = False
             try:
             # Collect sequences for the batch
-                for _ in range(batch_size):
+                for iz in range(batch_size):
+                    if iz == 0:
+                        start_time = time.time()
                     sequence = next(sequence_iter)
-                    
+                    if iz == 0:
+                        print("First sequence time", time.time() - start_time)
                     _tokens = sequence.tokens
                     _mask = sequence.mask
                     _patch_lengths = sequence.patch_lengths
