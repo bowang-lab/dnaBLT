@@ -293,11 +293,7 @@ class PackingIterator:
             try:
             # Collect sequences for the batch
                 for iz in range(batch_size):
-                    if iz == 0:
-                        start_time = time.time()
                     sequence = next(sequence_iter)
-                    if iz == 0:
-                        print("First sequence time", time.time() - start_time)
                     _tokens = sequence.tokens
                     _mask = sequence.mask
                     _patch_lengths = sequence.patch_lengths

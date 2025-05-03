@@ -8,6 +8,7 @@ import pyarrow.dataset
 from blterror import ByteLatentError
 from bltexample import BltExample
 # from bytelatent.preprocess.preprocess_entropies import get_id_key, get_text
+import time
 
 logger = getLogger(__name__)
 
@@ -135,23 +136,13 @@ class ArrowFileIterator:
             self._initialize_dataset()
 
         if self.batch_to_consume is not None:
-            yield from self._process_batch(self.batch_to_consume)
+            yield self.batch_to_consume
             self.batch_to_consume = None
+            self.current_row_in_batch = 0
         
-        # 0.277 seconds. So it's the consumer code that's cooking us.
-        # time_sum = 0
-        # for batch in self.batch_iterator:
-        #     batch_columns = batch.to_pydict()
-        #     start_time = time.time()
-        #     [b for b in self._process_batch(batch_columns)]
-        #     end_time = time.time()
-        #     time_sum += end_time - start_time
-        #     print(f"Time taken: {time_sum}")
-        # exit()
 
         for batch in self.batch_iterator:
-            batch_columns = batch.to_pydict()
-            yield from self._process_batch(batch_columns)
+            yield batch
 
     def _initialize_dataset(self):
         self.dataset = pa.dataset.dataset(
@@ -159,31 +150,8 @@ class ArrowFileIterator:
         )
         self.batch_iterator = self.dataset.to_batches(batch_size=self.arrow_batch_size)
 
-    def _process_batch(self, batch_columns):
-        if self.file_format == "arrow":
-            sample_ids = batch_columns["sample_id"]
-            texts = batch_columns["text"]
-            entropies = batch_columns["entropies"]
-        elif self.file_format == "json":
-            sample_ids = batch_columns[get_id_key(batch_columns)]
-            texts = get_text(batch_columns)
-            entropies = None
-        else:
-            raise ValueError(f"Unknown file format: {self.file_format}")
-
-        for i in range(len(sample_ids)):
-            self.row_num += 1
-            if (self.row_num - 1) % self.num_workers == self.worker_id:
-                yield BltExample(
-                    sample_id=sample_ids[i],
-                    entropies=entropies[i] if entropies is not None else None,
-                    text=texts[i],
-                    tokens=None,
-                    mask=None,
-                    patch_lengths=None,
-                )
-
     def set_position(self, target_row_num: int):
+        # Not implemented consistently prob
         data_str = maybe_truncate_string(str(self.dataset_files), 200)
         logger.info(f"Setting arrow position to {target_row_num} for {data_str}")
 

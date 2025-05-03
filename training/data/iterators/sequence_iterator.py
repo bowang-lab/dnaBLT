@@ -1,9 +1,7 @@
 from typing import Generator, List, Optional, Any
 import numpy as np
-from dataclasses import dataclass
 from pydantic import BaseModel, ConfigDict
 from preprocess_iterator import PreprocessIterator
-import time 
 
 class BltSequence(BaseModel):
     tokens: list[int]
@@ -58,10 +56,7 @@ class SequenceIterator:
         tokens: List[int] = []
         mask: List[bool] = []
 
-        start_time = time.time()
-        num_examples = 0
         for example in example_iter:
-            num_examples += 1
             
             # Validate example
             assert example.tokens is not None and len(example.tokens) > 0
@@ -82,12 +77,8 @@ class SequenceIterator:
                 # Use uniform patch length of 1 if no patches provided
                 patch_lengths.extend([1] * len(example.tokens))
             
-            if num_examples <= 2:
-                print(f"Patch length: {len(example.patch_lengths)}")
-
             # Process full buffers
             while len(patch_lengths) >= n_buffer_patches:
-                print(f"Example {num_examples}: {time.time() - start_time:.6f} seconds")
                 # Reshape patch lengths to form batches
                 x_patches = np.array(patch_lengths[:n_buffer_patches]).reshape(
                     self.buffer_size, self.output_seq_len
@@ -128,6 +119,11 @@ class SequenceIterator:
                     assert seq_patch_lengths[idx][0] > 0
                     # Yield sequence with or without patch lengths
                     if self.preprocess_iterator.add_patches:
+                        # import IPython
+                        # ns = locals().copy()
+                        # ns.update(globals())
+                        # IPython.embed(user_ns=ns)
+                        # exit()
                         yield BltSequence(
                             tokens=seq_tokens[idx],
                             mask=seq_mask[idx],
