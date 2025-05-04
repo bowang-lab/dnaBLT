@@ -107,11 +107,6 @@ class PreprocessIterator:
         self._init_preprocessing_tools()
         
         for example in self.base_iterator.create_iter():
-            import IPython
-            ns = locals().copy()
-            ns.update(globals())
-            IPython.embed(user_ns=ns)
-            exit()
             tokens = self._process_tokens(example)
             
             patch_lengths, entropies = self._process_patches(example, tokens)

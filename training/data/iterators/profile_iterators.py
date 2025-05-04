@@ -2,7 +2,9 @@ import time
 from args import DataloaderArgs, find_and_sanitize_chunks
 from arrow_iterator import ArrowFileIterator
 import torch
+from torch.nn.utils.rnn import pad_sequence
 import pyarrow as pa
+import numpy as np
 
 # begin = time.time()
 
@@ -73,46 +75,60 @@ def series_iterator_patch_lengths():
     
     return patch_len_list
 
+def patch_start_ids_from_patch_start_mask(mask: torch.Tensor) -> torch.LongTensor:
+    """
+    mask : [B, L′] boolean – True where a patch should start
+    returns a tensor [B, P_max] containing the start indices
+            (filled with L′ where a row has fewer than P_max patches)
+    """
+    B, L = mask.shape
+    max_patches = int(mask.sum(1).max().item())
+
+    if max_patches == 0:                                  # no patches at all
+        return torch.full((B, 1), L, dtype=torch.long, device=mask.device)
+
+    patch_ids = torch.arange(L, device=mask.device).expand(B, -1)     # [B, L]
+    sentinel  = torch.full_like(patch_ids, L)                         # pad value
+    # boolean concat trick from the original code
+    all_ids   = torch.cat([patch_ids, sentinel], dim=1)               # [B, 2L]
+    padded_m  = torch.cat([mask, ~mask], dim=1)                       # [B, 2L]
+
+    out = all_ids[padded_m].view(B, L)[:, :max_patches]               # [B, P_max]
+    return out
+
 def find_entropy_patch_start_ids(
-        entropies: torch.Tensor,
-        threshold: float,
-        include_next_token: bool = False
+    entropies:        torch.Tensor,        # [B, L]
+    threshold:        float | None = None,
+    include_next_tok: bool  = True,
 ) -> torch.LongTensor:
     """
-    entropies        : [B, L]  — per-token entropy-scores
-    returns LongTensor [B, 2+P]  (padded with seq_len; first two cols are 0, 1)
+    Exact batched analogue of your original single-example routine.
+    Returns a LongTensor [B, 2+P] whose first two columns are 0 and 1.
     """
     B, L = entropies.shape
-    device = entropies.device
+    dev   = entropies.device
 
-    # we always keep the first two positions (0, 1)
-    first_two = torch.tensor([0, 1], device=device).expand(B, 2)
+    # -----------------------------------------------------------------
+    # the “always present” first two tokens
+    first_two = torch.tensor([0, 1], device=dev).expand(B, 2)  # [B, 2]
+    preds_trunc_len = 2
 
-    ent = entropies[:, 1:]                       # drop the first token (handled by 'first_two')
+    # all work happens on the truncated view (drop token-0)
+    ent = entropies[:, 1:]                                     # [B, L-1]
     L_trunc = L - 1
 
-    # where does entropy exceed threshold?
-    start_mask = ent > threshold                 # [B, L-1]
-    if not include_next_token:                   # optionally suppress the last element
-        start_mask[:, -1] = False
+    patch_mask = ent > threshold                            # [B, L-1]
 
-    # gather the indices that were flagged in each row
-    row_idx, col_idx = torch.where(start_mask)   # 1-D tensors
-    counts_per_row = start_mask.sum(1)           # [B]
-    max_patches = int(counts_per_row.max())
+    if not include_next_tok:
+        patch_mask = patch_mask[:, :-1]                         # drop last column
 
-    pad_val = L                                  # sentinel “padding” index
-    out = torch.full((B, 2 + max_patches), pad_val, dtype=torch.long, device=device)
-    out[:, :2] = first_two
+    patch_start_ids = patch_start_ids_from_patch_start_mask(patch_mask)
 
-    if max_patches:                              # nothing to do if every row is empty
-        flat = col_idx + 1                       # +1 because we removed the very first token
-        chunks = torch.split(flat, counts_per_row.tolist())
-        for b, chunk in enumerate(chunks):
-            if chunk.numel():
-                out[b, 2:2 + chunk.numel()] = chunk
-
-    return out                                   # [B, 2+max_patches]
+    # -----------------------------------------------------------------
+    # re-add the 0/1 prefix and offset by +2  -------------------------
+    patch_start_ids = torch.cat([first_two,
+                                 patch_start_ids + preds_trunc_len], dim=1)
+    return patch_start_ids  
 
 # ---------------------------------------------------------------------
 # 2. Patch-start indices → patch lengths
@@ -139,49 +155,67 @@ def patch_lengths_from_start_ids(
 # 3. Split every “long” patch into chunks ≤ max_patch
 # ---------------------------------------------------------------------
 def split_large_numbers_tensor(
-        lengths: torch.Tensor,
+        lengths:   torch.Tensor,   # [B, N], 0-padded
         max_patch: int
-) -> torch.LongTensor:
+) -> torch.Tensor:                 # [B, N′], 0-padded
     """
-    Vectorised replacement of the old Python-loop ‘split_large_numbers’.
+    Vectorised “split large numbers” without any invalid reshapes.
 
-    lengths   : [B, N]  — zero-padded patch lengths
-    returns   : [B, N′] — zero-padded, every entry ≤ max_patch
+    Any element > max_patch is expanded into ⌈len/max_patch⌉ chunks of
+    size max_patch, with the last chunk carrying the remainder.
     """
-    B, N = lengths.shape
-    device, dtype = lengths.device, lengths.dtype
+    B, N   = lengths.shape
+    device = lengths.device
+    dtype  = lengths.dtype
 
-    # Flatten & discard zeros (already padding)
-    flat        = lengths.view(-1)
-    keep_mask   = flat > 0
-    flat_keep   = flat[keep_mask]                         # (=all true patch lengths)
+    # ---------------------------------------------------------------
+    # (1) flatten, but keep the *row* each element belongs to
+    flat      = lengths.view(-1)                          # [B*N]
+    keep_mask = flat > 0
+    flat_pos  = flat[keep_mask]                           # only >0 values
 
-    # how many chunks does each real length expand to?
-    n_chunks = torch.div(flat_keep + max_patch - 1, max_patch, rounding_mode='floor')
-    # total expanded length per batch sample
-    per_row_chunks = n_chunks.view(B, -1).sum(1)          # [B]
-    max_chunks     = int(per_row_chunks.max().item())
+    row_idx = torch.arange(B, device=device).repeat_interleave(N)
+    row_idx = row_idx[keep_mask]                          # same length as flat_pos
 
-    # ---- build the expanded (≤ max_patch) list ----------------------
-    # 1) repeat ‘max_patch’ n_chunks-times
-    expanded = torch.repeat_interleave(
-        flat_keep.new_full((1,), max_patch), n_chunks, dim=0
-    )
-    # 2) fix the *last* element in every group if there is a remainder
-    rem        = flat_keep % max_patch
-    has_rem    = rem != 0
-    last_idx   = torch.cumsum(n_chunks, 0) - 1            # idx of *last* chunk per group
-    expanded[last_idx[has_rem]] = rem[has_rem]
+    # ---------------------------------------------------------------
+    # (2) how many chunks will each positive value expand to?
+    n_chunks = torch.div(flat_pos + max_patch - 1,
+                         max_patch,
+                         rounding_mode='floor')            # ceil(len/max_patch)
 
-    # -----------------------------------------------------------------
-    # Re-assemble into [B, max_chunks] (still 0-padded)
+    # total chunks per *row*
+    per_row_chunks = torch.zeros(B, dtype=torch.long, device=device)
+    per_row_chunks.index_add_(0, row_idx, n_chunks)       # sum by row → [B]
+    max_chunks = int(per_row_chunks.max().item())
+
+    # ---------------------------------------------------------------
+    # (3) build one long ‘expanded’ vector of actual chunk sizes
+    total_chunks = int(n_chunks.sum().item())              # scalar
+
+    expanded = torch.full((total_chunks,),
+                          max_patch,
+                          dtype=dtype,
+                          device=device)                  # start with all 16s
+
+    # last element of every group might be a remainder
+    remainder = flat_pos % max_patch
+    has_rem   = remainder != 0
+    last_idx  = torch.cumsum(n_chunks, 0) - 1             # idx of last-chunk per group
+    expanded[last_idx[has_rem]] = remainder[has_rem]
+
+    # ---------------------------------------------------------------
+    # (4) scatter ‘expanded’ back into a [B, max_chunks] tensor
     out = torch.zeros(B, max_chunks, dtype=dtype, device=device)
-    p   = 0
-    for b, cnt in enumerate(per_row_chunks.tolist()):
-        if cnt:
-            out[b, :cnt] = expanded[p : p + cnt]
-            p += cnt
-    return out                                            # [B, max_chunks]
+
+    cursor = 0
+    for b in range(B):
+        cnt = per_row_chunks[b].item()
+        if cnt:                                           # skip empty rows
+            out[b, :cnt] = expanded[cursor: cursor + cnt]
+            cursor += cnt
+
+    return out
+
 
 
 def vectorized_iterator_patch_lengths():
@@ -206,25 +240,32 @@ def vectorized_iterator_patch_lengths():
         dataset_chunks[0], format=file_format
     )
     batch_iterator = dataset.to_batches()
+    batch = next(batch_iterator)
+    sample_ids = batch.column("sample_id").to_pylist()
+    texts = batch.column("text").to_pylist()
+    entropies_list = batch.column("entropies").to_pylist()
+    batch_size = len(texts)
+    # --- Tokenization (Common Step) ---
+    # padding id is 0
+    # TODO: make patch lengths work correctly with EOS token.
+    tokens = pad_sequence([torch.frombuffer(bytearray(s.encode("utf-8", errors="ignore")), dtype=torch.uint8).long() + 4 for s in texts], batch_first=True, padding_value=0)
+    entropies = pad_sequence([torch.tensor(e, dtype=torch.float32) for e in entropies_list], batch_first=True, padding_value=0)
     include_next_token = False
     bs, seq_len = tokens.shape
     seq_len_next_tok = seq_len + 1 if include_next_token else seq_len
-    scores = entropies.to(dtype=torch.float32)
     patch_start_ids = find_entropy_patch_start_ids(
-        scores, include_next_token=include_next_token,
-        threshold=threshold if threshold is not None else self.threshold,
+        entropies, include_next_tok=include_next_token,
+        threshold=args.patcher_args.threshold
     )
     patch_lengths = patch_lengths_from_start_ids(
         patch_start_ids, seq_len_next_tok
     )
 
     patch_lengths = split_large_numbers_tensor(
-        patch_lengths, max_patch=self.max_patch_length
+        patch_lengths, max_patch=args.patcher_args.max_patch_length
     )
-    max_len = max(len(pl) for pl in patch_lengths)
-    patch_lengths = [rightpad(pl, 0, max_len=max_len) for pl in patch_lengths]
-    patch_lengths = torch.tensor(patch_lengths, dtype=tokens.dtype, device=tokens.device)
 
+    from patching import check_non_zero_after_zero
     assert not check_non_zero_after_zero(patch_lengths)
     last_non_zero_col_reversed = ((patch_lengths != 0).flip(dims=[1]).int().argmax(dim=1).min())
     patch_lengths = patch_lengths[:, : patch_lengths.shape[1] - last_non_zero_col_reversed]
@@ -248,3 +289,4 @@ def vectorized_iterator_patch_lengths():
 if __name__ == "__main__":
     # get_batch()
     vectorized_iterator_patch_lengths()
+    # series_iterator_patch_lengths()
