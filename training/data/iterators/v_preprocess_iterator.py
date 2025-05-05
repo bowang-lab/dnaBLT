@@ -10,6 +10,7 @@ from patching import PatcherArgs, Patcher, PatchingModeEnum
 from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
+EOS_ID = 2
 
 @dataclass
 class BltExample:
@@ -59,7 +60,8 @@ class PreprocessIterator:
                 continue
 
             # --- Tokenization (Common Step) ---
-            tokens = pad_sequence([torch.frombuffer(bytearray(s.encode("utf-8", errors="ignore")), dtype=torch.uint8).long() + 4 for s in texts], batch_first=True, padding_value=0)
+            tokenized = [torch.cat((torch.frombuffer(bytearray(s.encode("utf-8", errors="ignore")), dtype=torch.uint8).long() + 4, torch.tensor([EOS_ID]))) for s in texts]
+            tokens = pad_sequence(tokenized, batch_first=True, padding_value=0)
             entropies = pad_sequence([torch.tensor(e, dtype=torch.float32) for e in entropies_list], batch_first=True, padding_value=0)
             # --- Prepare Output Lists ---
             include_next_token = False

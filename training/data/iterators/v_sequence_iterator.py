@@ -50,6 +50,7 @@ class SequenceIterator:
         toks_buf = self._patch_tokens
         lens_buf = self._patch_lengths
         cursor   = self._cursor
+        device = torch.device("cpu")   # will be updated on the first real example
 
         for example in self._src_iter:
             tk_batch: torch.Tensor = example.tokens                  # [B, T]
@@ -58,32 +59,58 @@ class SequenceIterator:
 
             # -------- Flatten the batch into a stream of patches -------- #
             for row_tokens, row_pl in zip(tk_batch, pl_batch):
-                nz_mask = row_pl != 0
-                if not torch.any(nz_mask):
-                    continue                                          # empty row
+                # Keep patch‑lengths on the **CPU** to avoid a host⇄device sync
+                # when we materialise them as Python ints.
+                lengths = row_pl.cpu()
+                lengths = lengths[lengths.ne(0)]           # drop zero‑length slots
+                if lengths.numel() == 0:
+                    continue
 
-                lengths = row_pl[nz_mask].tolist()                    # List[int]
-                n_tok_row = sum(lengths)
-                row_tokens = row_tokens[: n_tok_row]                 # trim padding
+                # Trim away padding once, then cut into patches in C++
+                total_tokens = int(lengths.sum())
+                row_tokens = row_tokens[: total_tokens]
 
-                # Split tokens by patch boundaries (torch.split is C‑backed)
-                for length, patch in zip(lengths, torch.split(row_tokens, lengths)):
-                    toks_buf.append(patch)
-                    lens_buf.append(length)
+                # torch.split_with_sizes does the heavy lifting in a single call
+                patches = torch.split(row_tokens, lengths.tolist())
 
+                # Running buffers keep a *patch‑level* alignment
+                toks_buf.extend(patches)          # one tensor per patch
+                lens_buf.extend(lengths.tolist()) # matching scalar lengths
+            
             # -------- Emit full packed sequences as soon as possible ----- #
             while cursor + max_seq <= len(lens_buf):
-                seq_lens = lens_buf[cursor : cursor + max_seq]
-                seq_toks = torch.cat(toks_buf[cursor : cursor + max_seq])
+                end = cursor + max_seq
+                seq_lens = lens_buf[cursor:end]            # Python list slice (cheap)
+                seq_toks = torch.cat(toks_buf[cursor:end])  # Concatenate once
 
                 yield PackedSequence(
                     tokens=seq_toks,
                     patch_lengths=torch.tensor(seq_lens, device=device, dtype=torch.long),
                 )
-                cursor += max_seq
-                self._compact_buffers()
+                cursor = end
+
+                # Periodically drop consumed prefix to keep memory bounded
+                if cursor > 4 * max_seq and cursor % (4 * max_seq) == 0:
+                    del toks_buf[:cursor]
+                    del lens_buf[:cursor]
+                    cursor = 0
 
             self._cursor = cursor
+            self._compact_buffers()
+
+        # -------- Final flush so *no tokens are ever dropped* -------- #
+        remaining = len(lens_buf) - cursor
+        if remaining:
+            seq_lens = lens_buf[cursor:]                 # leftover patch lengths
+            pad      = max_seq - remaining               # how many zero‑length slots
+            seq_lens += [0] * pad                        # right‑pad to MAX_SEQLEN
+
+            seq_toks = torch.cat(toks_buf[cursor:]) if remaining else torch.empty(0, device=device)
+
+            yield PackedSequence(
+                tokens=seq_toks,
+                patch_lengths=torch.tensor(seq_lens, device=device, dtype=torch.long),
+            )
 
     def _compact_buffers(self) -> None:
         """Drop consumed patches when cursor grows large to keep memory bounded."""
