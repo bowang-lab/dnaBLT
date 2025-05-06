@@ -146,5 +146,4 @@ class BltTokenizer(Tokenizer):
         ).decode("utf-8", errors="ignore")
 
     def get_token_offsets(self, text: str, tokens: list[int] | None = None):
-        # TODO: Figure out what this does
         raise NotImplementedError()

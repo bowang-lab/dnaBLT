@@ -26,7 +26,7 @@ class SamplingIterator:
         if set(source_to_weight.keys()) != set(source_to_iterator.keys()):
             raise ValueError("source_to_weight and source_to_iterator must have the same keys")
 
-    def __iter__(self) -> Generator[Any, None, None]:
+    def create_iter(self) -> Generator[Any, None, None]:
         """
         Creates and returns an iterator that samples from the source iterators
         according to their weights.
@@ -61,3 +61,8 @@ class SamplingIterator:
                 norm_weights = np.array(weights) / np.sum(weights)
                 n_sources = len(possible_sources)
     
+    def __iter__(self) -> Iterator[Any]:
+        """
+        Returns an iterator that samples from the source iterators according to their weights.
+        """
+        return self.create_iter()

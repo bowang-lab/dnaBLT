@@ -9,10 +9,10 @@ from pydantic import BaseModel, ConfigDict
 import fsspec
 
 from sampling_iterator import SamplingIterator
-from preprocess_iterator import PreprocessIterator
-from arrow_iterator import ArrowFileIterator
-from sequence_iterator import SequenceIterator, SequencePackingArgs
-from packing_iterator import PackingArgs, PackingIterator, PackingMode
+from v_preprocess_iterator import PreprocessIterator
+from v_arrow_iterator import ArrowFileIterator
+from v_sequence_iterator import SequenceIterator, PackedSequence
+from v_packing_iterator import PackingArgs, PackingIterator, PackingMode
 
 from blt import ByteLatentTransformerArgs
 from optim import OptimArgs
@@ -132,8 +132,8 @@ class PackedCausalTransformerGeneratorArgs(BaseModel):
 class DataloaderArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     s3_profile: str | None = None
-    root_dir: str | None = "./outputs"
-    sources: dict[str, dict[str, float]] = {"train": {"entropies_validation.arrow": 1}, "validation": {"entropies_validation.arrow": 1}}
+    root_dir: str | None = "/Users/arnavshah/Code/dnaBLT/outputs"
+    sources: dict[str, dict[str, float]] = {"train": {"entropies_validation_cloned.arrow": 1}, "validation": {"entropies_validation.arrow": 1}}
     batch_size: int = 16
     seq_len: int = 4096
     seed: int = 42
@@ -145,8 +145,8 @@ class DataloaderArgs(BaseModel):
     dataset_files: list[str] | None = None
     # entropy_model_name: str | None = "transformer_100m"
     entropy_model_name: str | None = None
-    arrow_batch_size: int = 100
-    buffer_size: int = 64 # 512
+    arrow_batch_size: int = 16 # can't be larger unless we want to rewrite the entropy tensors.
+    buffer_size: int = 512
     file_format: str = "arrow"
 
     pad_to_max_length: bool = True
@@ -161,10 +161,6 @@ class DataloaderArgs(BaseModel):
     def _create_sequence_iterators(
         self, rank: int, world_size: int, mode: str = "train"
     ) -> dict[str, SequenceIterator]:
-        sequence_packing_args = SequencePackingArgs(
-            output_seq_len=self.seq_len,
-            buffer_size=self.buffer_size,
-        )
         source_to_sequence_iterator: dict[str, SequenceIterator] = {}
         for dataset_path in self.sources[mode]:
             shuffle_rng_state = get_rng_state(self.seed + 1, rank, world_size)
@@ -183,12 +179,12 @@ class DataloaderArgs(BaseModel):
             preprocess_iterator = PreprocessIterator(
                 looping_iterator,
                 patcher_args=self.patcher_args,
-                tokenizer_args=self.tokenizer_args,
+                # tokenizer_args=self.tokenizer_args,
                 add_patches=self.add_patches,
             )
             sequence_iterator = SequenceIterator(
                 preprocess_iterator,
-                sequence_packing_config=sequence_packing_args,
+                max_seq_patches=self.seq_len * self.buffer_size,
                 rng_state=shuffle_rng_state,
             )
 

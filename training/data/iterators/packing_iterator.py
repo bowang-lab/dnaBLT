@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Generator, List, Optional
 from pydantic import BaseModel
 from sequence_iterator import SequenceIterator
+import time 
 
 import numpy as np
 
@@ -161,7 +162,6 @@ def truncate_batch(
             batch.patch_lengths[range(len(batch.patch_lengths)), non_zero_indices] += (
                 max_length - batch.x.shape[1]
             )
-            # TODO: We could get rid of many of these complications by moving this function directly in the dataloader.
             x = np.full((batch.x.shape[0], max_length), pad_id, dtype=batch.x.dtype)
             x[:, : batch.x.shape[1]] = batch.x
             batch.x = x
@@ -291,9 +291,8 @@ class PackingIterator:
             stop_iteration = False
             try:
             # Collect sequences for the batch
-                for _ in range(batch_size):
+                for iz in range(batch_size):
                     sequence = next(sequence_iter)
-                    
                     _tokens = sequence.tokens
                     _mask = sequence.mask
                     _patch_lengths = sequence.patch_lengths
