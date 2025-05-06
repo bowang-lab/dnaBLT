@@ -162,7 +162,6 @@ def truncate_batch(
             batch.patch_lengths[range(len(batch.patch_lengths)), non_zero_indices] += (
                 max_length - batch.x.shape[1]
             )
-            # TODO: We could get rid of many of these complications by moving this function directly in the dataloader.
             x = np.full((batch.x.shape[0], max_length), pad_id, dtype=batch.x.dtype)
             x[:, : batch.x.shape[1]] = batch.x
             batch.x = x

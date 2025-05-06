@@ -4,11 +4,9 @@ from logging import getLogger
 from typing import Generator, Any, Optional
 
 import pyarrow as pa
-import pyarrow.dataset
 from blterror import ByteLatentError
 from bltexample import BltExample
 # from bytelatent.preprocess.preprocess_entropies import get_id_key, get_text
-import time
 
 logger = getLogger(__name__)
 

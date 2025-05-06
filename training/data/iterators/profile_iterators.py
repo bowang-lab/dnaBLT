@@ -122,7 +122,7 @@ def vectorized_iterator_patch_lengths():
     sequence_iterator = iter(
         SequenceIterator(
             preprocess_iterator=preprocess_iterator,
-            max_seq_patches=(args.seq_len + 1)
+            max_seq_patches=args.seq_len
             * args.buffer_size,  # add one for separate EOS token patch
         )
     )
@@ -144,12 +144,12 @@ def vectorized_iterator_patch_lengths():
         )
     )
 
-    start_time = time.time()
-    for batch in packing_iterator:
-        pass
-    end_time = time.time()
-    print(f"Time taken to iterate through 2190 samples: {end_time - start_time} seconds")
-
+    batch = next(packing_iterator)
+    import IPython
+    ns = locals().copy()
+    ns.update(globals())
+    IPython.embed(user_ns=ns)
+    exit()
 
 # token_sums.append(batch.mask.sum().item())
 # patch_sums.append(batch.patch_lengths.flatten().nonzero()[0].shape[0])

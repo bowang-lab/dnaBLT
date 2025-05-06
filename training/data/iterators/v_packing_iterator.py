@@ -206,34 +206,45 @@ class PackingIterator:
         assert (
             max_length is not None
         ), "max_length must be provided for patch-based packing"
-        running_toks = torch.tensor([])
-        running_patch_lengths = torch.tensor([])
+        running_toks = None
+        running_y = None
+        running_patch_lengths = None
+        running_masks = None
 
         for batch in sequence_iter:
-            tokens, patch_lengths = truncate_and_rectangularise(
+            tokens, y_tokens, patch_lengths, masks = truncate_and_rectangularise(
                 batch,
                 max_length=max_length,
                 pad_id=pad_id,
-                patches_per_seq=seq_len+1,
+                patches_per_seq=seq_len,
                 pad_to_max_length=pad_to_max_length,
             )
 
-            tokens = torch.cat((running_toks, tokens), dim=0)
-            patch_lengths = torch.cat((running_patch_lengths, patch_lengths), dim=0)
+            if running_toks is not None:
+                tokens = torch.cat((running_toks, tokens), dim=0)
+                y_tokens = torch.cat((running_y, y_tokens), dim=0)
+                patch_lengths = torch.cat((running_patch_lengths, patch_lengths), dim=0)
+                masks = torch.cat((running_masks, masks), dim=0)
 
             while tokens.shape[0] >= batch_size: # assumes fetch size geq batch size (valid)
                 yield Batch(
                     x=tokens[:batch_size],
+                    y=y_tokens[:batch_size],
+                    mask=masks[:batch_size],
                     patch_lengths=patch_lengths[:batch_size]
-                )  # y and mask
-                tokens = tokens[batch_size:]
+                )
+                tokens        = tokens[batch_size:]
+                y_tokens      = y_tokens[batch_size:]
                 patch_lengths = patch_lengths[batch_size:]
+                masks         = masks[batch_size:]
             
             running_toks = tokens
+            running_y = y_tokens
             running_patch_lengths = patch_lengths
+            running_masks = masks
         
-        if running_toks.shape[0] > 0:
-            yield Batch(x=running_toks, patch_lengths=running_patch_lengths)
+        if running_toks is not None and running_toks.shape[0] > 0:
+            yield Batch(x=running_toks, y=running_y, mask=running_masks, patch_lengths=running_patch_lengths)
 
 
 def truncate_and_rectangularise(
@@ -247,7 +258,7 @@ def truncate_and_rectangularise(
     """
     • Edits `batch.patch_lengths` *in-place* so each header row sums to
       `max_length+1` (EOS still counted).
-    • Returns new 2-D tensors (`tokens2d`, plus `y2d` / `mask2d` if present),
+    • Returns new 2‑D tensors (`tokens2d`, `y2d`, `pl`, `mask2d`),
       padded on the right with `pad_id` (and mask=False) as needed.
     """
     dev = batch.tokens.device
@@ -324,20 +335,14 @@ def truncate_and_rectangularise(
     tokens2d[valid_mask] = gathered[valid_mask]
     # positions where `valid_mask` is False already contain `pad_id`
 
+    # ---------- build y (target) tensor -------------------------------
+    # Start by shifting tokens left so position t predicts token t+1.
+    # The last column is initialised with PAD and stays PAD so the loss
+    # ignores the final position (no next‑token available).
+    y2d = tokens2d.new_full(tokens2d.shape, pad_id)
+    if width > 1:
+        y2d[:, :-1] = tokens2d[:, 1:]
 
-    # ---------- copy optional companions the same way ----------------
-    # y2d, mask2d = None, None
-    # if batch.y is not None:
-    #     y2d = batch.y.new_full((B, width), pad_id)
-    #     for b in range(B):
-    #         n = row_len_tok[b].item()
-    #         y2d[b, :n] = batch.y[src_off[b]: src_off[b] + n]
-
-    # if batch.mask is not None:
-    #     mask2d = batch.mask.new_full((B, width), False)
-    #     for b in range(B):
-    #         n = row_len_tok[b].item()
-    #         mask2d[b, :n] = batch.mask[src_off[b]: src_off[b] + n]
 
     # ---------- sanity checks ----------------------------------------
     assert torch.all(max_hdr - pl.sum(1) == 0)
@@ -347,4 +352,4 @@ def truncate_and_rectangularise(
 
     # ---------- return everything ------------------------------------
     # return tokens2d, pl, y2d, mask2d
-    return tokens2d, pl
+    return tokens2d, y2d, pl, valid_mask
