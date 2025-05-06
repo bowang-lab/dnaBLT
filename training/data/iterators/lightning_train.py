@@ -248,39 +248,10 @@ class ByteLatentDataModule(pl.LightningDataModule):
         self.test_mode = test_mode
     
     def setup(self, stage=None):
-        if self.test_mode:
-            # For testing, create a dummy data loader instead of loading from files
-            from collections import namedtuple
-            Batch = namedtuple('Batch', ['x', 'y', 'patch_lengths', 'mask', 'ngram_ids'])
-            
-            class DummyIterator:
-                def __iter__(self):
-                    return self.create_iter()
-                
-                def create_iter(self):
-                    from collections import namedtuple
-                    Batch = namedtuple('Batch', ['x', 'y', 'patch_lengths', 'mask', 'ngram_ids'])
-                    
-                    # Create a generator function
-                    def generator():
-                        for _ in range(10):  # Generate 10 dummy batches
-                            yield Batch(
-                                x=torch.randn(2, 10, 128),  # batch_size=2, seq_len=10, dim=128
-                                y=torch.randint(0, 4, (2, 10)),  # batch_size=2, seq_len=10
-                                patch_lengths=torch.ones(2, 10) * 5,  # batch_size=2, seq_len=10
-                                mask=torch.ones(2, 10),  # batch_size=2, seq_len=10
-                                ngram_ids=None
-                            )
-                    
-                    return generator()
-            
-            self.data_loader = DummyIterator()
-        else:
-            # Regular data loading logic using Lightning's distributed parameters
-            rank = self.trainer.global_rank if self.trainer is not None else 0
-            world_size = self.trainer.world_size if self.trainer is not None else 1
-            self.train_data_loader = self.args.data.build_from_rank(rank=rank, world_size=world_size, mode="train")
-            self.valid_data_loader = self.args.data.build_from_rank(rank=rank, world_size=world_size, mode="validation")
+        rank = self.trainer.global_rank if self.trainer is not None else 0
+        world_size = self.trainer.world_size if self.trainer is not None else 1
+        self.train_data_loader = self.args.data.build_from_rank(rank=rank, world_size=world_size, mode="train")
+        self.valid_data_loader = self.args.data.build_from_rank(rank=rank, world_size=world_size, mode="validation")
     
     def train_dataloader(self):
         return self.train_data_loader

@@ -45,10 +45,21 @@ def get_id_key(doc: dict) -> int:
         raise ValueError(f"Could not find a id key from: {doc.keys()}")
 
 
-
 def shard_sort_key(file: str):
     match = re.search(r".+\.shard_([0-9]+)\.arrow", file)
     return int(match.group(1))
+
+
+def _select_shard_files(dataset_files: list[str], worker_id: int, num_workers: int) -> list[str]:
+    """
+    Deterministically assign a disjoint subset of `dataset_files` to this
+    worker.  The `i`‑th worker takes every `num_workers`‑th file starting
+    from index `i`.  This keeps ordering stable across restarts and
+    guarantees each file is processed by exactly one worker.
+    """
+    if num_workers <= 1:
+        return dataset_files
+    return [f for idx, f in enumerate(dataset_files) if idx % num_workers == worker_id]
 
 
 def maybe_truncate_string(text: str, max_length: int):
@@ -86,6 +97,9 @@ class ArrowFileIterator:
         self.file_format = file_format
 
         self.dataset_files = self._initialize_dataset_files(file_path, dataset_files, file_format)
+
+        # Pre‑compute the subset of files this worker will handle.
+        self.shard_files = _select_shard_files(self.dataset_files, self.worker_id, self.num_workers)
 
     def _initialize_dataset_files(self, file_path, dataset_files, file_format):
         if dataset_files is not None:
@@ -144,14 +158,23 @@ class ArrowFileIterator:
             yield batch
 
     def _initialize_dataset(self):
-        self.dataset = dataset.dataset(
-            self.dataset_files, format=self.file_format
-        )
+        """
+        Lazily create the underlying Arrow dataset *only* from the files
+        assigned to this worker.  This prevents different DDP ranks from
+        reading the same data and eliminates duplicate training samples.
+        """
+        if len(self.shard_files) == 0:
+            raise ByteLatentError(
+                f"Worker {self.worker_id}/{self.num_workers} received no files to "
+                "process.  Ensure the number of workers does not exceed the number "
+                "of dataset shards."
+            )
+        self.dataset = dataset.dataset(self.shard_files, format=self.file_format)
         self.batch_iterator = self.dataset.to_batches(batch_size=self.arrow_batch_size)
 
     def set_position(self, target_row_num: int):
         # Not implemented consistently prob
-        data_str = maybe_truncate_string(str(self.dataset_files), 200)
+        data_str = maybe_truncate_string(str(self.shard_files), 200)
         logger.info(f"Setting arrow position to {target_row_num} for {data_str}")
 
         if target_row_num == 0:
@@ -162,7 +185,7 @@ class ArrowFileIterator:
             return
 
         self.dataset = pa.dataset.dataset(
-            self.dataset_files, format=self.file_format
+            self.shard_files, format=self.file_format
         )
         self.batch_iterator = self.dataset.to_batches(batch_size=self.arrow_batch_size)
 

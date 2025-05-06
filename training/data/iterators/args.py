@@ -1,5 +1,6 @@
 import logging
 import os
+import math
 from typing import Any
 from enum import Enum
 
@@ -89,25 +90,36 @@ def distribute_data_to_rank(
     s3_profile: str | None = None,
     file_pattern: str = TRAIN_DATA_FILE_PATTERN,
 ) -> ArrowFileIterator:
+    """
+    Build an `ArrowFileIterator` that is aware of the global DDP rank.
+
+    * The global `rank` is used directly as `worker_id`, and `world_size`
+      is passed as `num_workers`.  This allows the iterator to deterministically
+      pick a disjoint subset of files using the modulo logic added in
+      `_select_shard_files`.
+    * If the number of dataset shards is smaller than `world_size`, replicate
+      the list so every rank still receives at least one file.  This prevents
+      the empty‑shard error raised inside `ArrowFileIterator`.
+    """
     dataset_chunks = find_and_sanitize_chunks(
         dataset_path, world_size, entropy_files, s3_profile=s3_profile
     )
-    n_workers_per_chunk = world_size // len(dataset_chunks)
-    rank_to_arrow_iterator_params = []
-    for worker_id in range(n_workers_per_chunk):
-        rank_to_arrow_iterator_params.append(
-            ArrowFileIterator(
-                file_path=None,
-                file_format=file_format,
-                worker_id=worker_id,
-                num_workers=n_workers_per_chunk,
-                preprocess_dir=preprocess_dir,
-                dataset_files=dataset_chunks,
-                entropy_model_name=entropy_model_name,
-                arrow_batch_size=arrow_batch_size
-            )
-        )
-    return rank_to_arrow_iterator_params[rank]
+
+    # Ensure there are at least as many shards as ranks; replicate if needed.
+    if len(dataset_chunks) < world_size:
+        reps = math.ceil(world_size / len(dataset_chunks))
+        dataset_chunks = (dataset_chunks * reps)[:world_size]
+
+    return ArrowFileIterator(
+        file_path=None,
+        file_format=file_format,
+        worker_id=rank,          # global DDP rank
+        num_workers=world_size,  # total ranks
+        preprocess_dir=preprocess_dir,
+        dataset_files=dataset_chunks,
+        entropy_model_name=entropy_model_name,
+        arrow_batch_size=arrow_batch_size,
+    )
 
 
 class PackedCausalTransformerGeneratorArgs(BaseModel):
