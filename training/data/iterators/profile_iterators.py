@@ -28,7 +28,7 @@ def get_batch():
 def series_iterator_patch_lengths():
     file_format = args.file_format
     dataset_path = args.root_dir
-    entropy_files = "entropies_validation_cloned.arrow"
+    entropy_files = "entropies_validation_cloned"
     preprocess_dir = args.preprocess_dir
     entropy_model_name = args.entropy_model_name
     arrow_batch_size = args.arrow_batch_size
@@ -83,12 +83,12 @@ def series_iterator_patch_lengths():
 def vectorized_iterator_patch_lengths():
     file_format = args.file_format
     dataset_path = args.root_dir
-    entropy_files = "entropies_validation_cloned.arrow"
+    entropy_files = "entropies_validation*"
     preprocess_dir = args.preprocess_dir
     entropy_model_name = args.entropy_model_name
     arrow_batch_size = args.arrow_batch_size
     rank = 0
-    world_size = 1
+    world_size = 3
     s3_profile = args.s3_profile
 
     dataset_chunks = find_and_sanitize_chunks(
@@ -161,6 +161,6 @@ def vectorized_iterator_patch_lengths():
 # print("Real patch ratio:", sum(patch_sums) / (16 * 4096 * batches))
 
 if __name__ == "__main__":
-    get_batch()
-    # vectorized_iterator_patch_lengths()
+    # get_batch()
+    vectorized_iterator_patch_lengths()
     # series_iterator_patch_lengths()

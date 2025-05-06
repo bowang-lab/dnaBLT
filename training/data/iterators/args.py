@@ -145,7 +145,7 @@ class DataloaderArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     s3_profile: str | None = None
     root_dir: str | None = "/Users/arnavshah/Code/dnaBLT/outputs"
-    sources: dict[str, dict[str, float]] = {"train": {"entropies_validation_cloned.arrow": 1}, "validation": {"entropies_validation.arrow": 1}}
+    sources: dict[str, dict[str, float]] = {"train": {"entropies_validation*": 1}, "validation": {"entropies_validation*": 1}}
     batch_size: int = 16
     seq_len: int = 4096
     seed: int = 42
