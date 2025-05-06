@@ -4,6 +4,7 @@ import torch
 from typing import Generator, Iterable, List
 from pydantic import BaseModel, ConfigDict, Field
 from dataclasses import dataclass
+import numpy as np
 
 MAX_SEQLEN = 4096  # number of *patches* per packed example
 
@@ -32,6 +33,7 @@ class SequenceIterator:
     def __init__(
         self,
         preprocess_iterator: Iterable,  # Generator[BltExample]
+        rng_state = None,
         max_seq_patches: int = MAX_SEQLEN,
     ) -> None:
         self._src_iter = preprocess_iterator
@@ -42,23 +44,38 @@ class SequenceIterator:
         self._patch_lengths: List[int] = []
         self._cursor: int = 0  # index of the first un‑consumed patch
 
+        if rng_state is None:
+            self.rng = None
+        else:
+            self.rng = np.random.default_rng()
+            self.rng.bit_generator.state = rng_state
+
     # --------------------------------------------------------------------- #
     #                           Public iterator                              #
     # --------------------------------------------------------------------- #
-    def __iter__(self) -> Generator[PackedSequence, None, None]:
+    def create_iter(self) -> Generator[PackedSequence, None, None]:
         max_seq  = self._max_seq
         toks_buf = self._patch_tokens
         lens_buf = self._patch_lengths
         cursor   = self._cursor
         device = torch.device("cpu")   # will be updated on the first real example
 
-        for example in self._src_iter:
+        for example in self._src_iter.create_iter():
             tk_batch: torch.Tensor = example.tokens                  # [B, T]
             pl_batch: torch.Tensor = example.patch_lengths           # [B, P]
             device = tk_batch.device
 
             # -------- Flatten the batch into a stream of patches -------- #
-            for row_tokens, row_pl in zip(tk_batch, pl_batch):
+            # Determine processing order: random permutation for better mixing,
+            # or sequential if no RNG was supplied.
+            row_indices = (
+                self.rng.permutation(len(tk_batch))
+                if self.rng is not None
+                else range(len(tk_batch))
+            )
+            for idx in row_indices:
+                row_tokens = tk_batch[idx]
+                row_pl     = pl_batch[idx]
                 # Keep patch‑lengths on the **CPU** to avoid a host⇄device sync
                 # when we materialise them as Python ints.
                 lengths = row_pl.cpu()
@@ -77,7 +94,6 @@ class SequenceIterator:
                 toks_buf.extend(patches)          # one tensor per patch
                 lens_buf.extend(lengths.tolist()) # matching scalar lengths
             
-            # -------- Emit full packed sequences as soon as possible ----- #
             while cursor + max_seq <= len(lens_buf):
                 end = cursor + max_seq
                 seq_lens = lens_buf[cursor:end]            # Python list slice (cheap)
@@ -123,3 +139,7 @@ class SequenceIterator:
     # ------------------------------ Utilities ---------------------------- #
     def __len__(self) -> int:  # optional, not strictly required
         raise TypeError("SequenceIterator does not support len().")
+    
+    def __iter__(self):
+        """Iterate over the packed sequences."""
+        return self.create_iter()

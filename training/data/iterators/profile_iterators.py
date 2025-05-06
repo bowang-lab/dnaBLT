@@ -98,8 +98,7 @@ def vectorized_iterator_patch_lengths():
         s3_profile=s3_profile,
     )
 
-    arrow_iterator = iter(
-        ArrowFileIterator(
+    arrow_iterator = ArrowFileIterator(
             file_path=None,
             file_format=file_format,
             worker_id=rank,
@@ -109,23 +108,19 @@ def vectorized_iterator_patch_lengths():
             entropy_model_name=entropy_model_name,
             arrow_batch_size=args.arrow_batch_size,
         )
-    )
+    
 
-    preprocess_iterator = iter(
-        PreprocessIterator(
+    preprocess_iterator = PreprocessIterator(
             arrow_batch_iterator=arrow_iterator,
             add_patches=True,
             patcher_args=args.patcher_args,
         )
-    )
 
-    sequence_iterator = iter(
-        SequenceIterator(
+    sequence_iterator = SequenceIterator(
             preprocess_iterator=preprocess_iterator,
             max_seq_patches=args.seq_len
             * args.buffer_size,  # add one for separate EOS token patch
         )
-    )
 
     packing_args = PackingArgs(
         batch_size=args.batch_size,
@@ -166,6 +161,6 @@ def vectorized_iterator_patch_lengths():
 # print("Real patch ratio:", sum(patch_sums) / (16 * 4096 * batches))
 
 if __name__ == "__main__":
-    # get_batch()
-    vectorized_iterator_patch_lengths()
+    get_batch()
+    # vectorized_iterator_patch_lengths()
     # series_iterator_patch_lengths()

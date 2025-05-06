@@ -52,7 +52,7 @@ class PreprocessIterator:
 
 
     def create_iter(self) -> Generator[Dict[str, Any], Any, None]:
-        for arrow_batch in self.arrow_batch_iterator:
+        for arrow_batch in self.arrow_batch_iterator.create_iter():
             texts = arrow_batch.column("text").to_pylist()
             entropies_list = arrow_batch.column("entropies").to_pylist()
             batch_size = len(texts)

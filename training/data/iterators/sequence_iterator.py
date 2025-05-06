@@ -119,11 +119,6 @@ class SequenceIterator:
                     assert seq_patch_lengths[idx][0] > 0
                     # Yield sequence with or without patch lengths
                     if self.preprocess_iterator.add_patches:
-                        # import IPython
-                        # ns = locals().copy()
-                        # ns.update(globals())
-                        # IPython.embed(user_ns=ns)
-                        # exit()
                         yield BltSequence(
                             tokens=seq_tokens[idx],
                             mask=seq_mask[idx],

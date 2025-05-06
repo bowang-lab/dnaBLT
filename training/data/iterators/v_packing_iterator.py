@@ -99,23 +99,6 @@ class Batch:
         )
 
 
-def _merge_patch_seq_masks(bs: int, slen: int, mask_seqs: List[List[bool]]):
-    assert len(mask_seqs) == bs
-    lens = [len(m) for m in mask_seqs]
-    if all(all(m) for m in mask_seqs) and all(lens[0] == l for l in lens):
-        return np.ones((bs, slen), dtype=bool)
-    assert slen == max(lens) - 1, f"slen={slen} != max(lens)-1={max(lens) - 1}"
-    mask = np.zeros((bs, slen), dtype=bool)
-    for i, m in enumerate(mask_seqs):
-        if m is None:
-            print(
-                "Did not implement None mask, the mask should be True for all toks, so we need to pass that to this function."
-            )
-            raise NotImplementedError
-        mask[i][: len(mask_seqs[i]) - 1] = mask_seqs[i][1:]
-    return mask
-
-
 class PackingIterator:
     def __init__(
         self,
@@ -211,7 +194,7 @@ class PackingIterator:
         running_patch_lengths = None
         running_masks = None
 
-        for batch in sequence_iter:
+        for batch in sequence_iter.create_iter():
             tokens, y_tokens, patch_lengths, masks = truncate_and_rectangularise(
                 batch,
                 max_length=max_length,

@@ -4,6 +4,7 @@ from logging import getLogger
 from typing import Generator, Any, Optional
 
 import pyarrow as pa
+import pyarrow.dataset as dataset
 from blterror import ByteLatentError
 from bltexample import BltExample
 # from bytelatent.preprocess.preprocess_entropies import get_id_key, get_text
@@ -143,7 +144,7 @@ class ArrowFileIterator:
             yield batch
 
     def _initialize_dataset(self):
-        self.dataset = pa.dataset.dataset(
+        self.dataset = dataset.dataset(
             self.dataset_files, format=self.file_format
         )
         self.batch_iterator = self.dataset.to_batches(batch_size=self.arrow_batch_size)
