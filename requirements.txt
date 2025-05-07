@@ -21,10 +21,7 @@ submitit
 typer
 rich
 transformers
-mamba-ssm
-causal-conv1d>=1.4.0
 pytorch-lightning
-deepspeed
 fsspec[full]
 orjson
 s3fs

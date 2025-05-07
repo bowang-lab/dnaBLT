@@ -10,9 +10,11 @@ import torch
 import torch.nn.functional as F
 from torch.optim import lr_scheduler
 
+import wandb
+from pytorch_lightning.loggers import WandbLogger
+
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback
-from pytorch_lightning.loggers import CSVLogger
 
 from args import TrainArgs
 import torch._dynamo
@@ -161,8 +163,6 @@ class ByteLatentLightningModule(pl.LightningModule):
         if batch_patch_lengths is not None and isinstance(batch_patch_lengths, np.ndarray):
              batch_patch_lengths = torch.tensor(batch_patch_lengths, device=batch_x.device) 
         # Update byte count for metrics based on tokenizer type
-        if self.args.data.tokenizer_args.name in ["bytes", "blt"]:
-            self.n_bytes += batch_y.numel() if mask is None else mask.sum().item()
         elif self.args.data.tokenizer_args.name in ["sp", "tiktoken"]:
             for example in batch.y:
                 target_tokens = self.tokenizer.decode(example.tolist())
@@ -178,6 +178,7 @@ class ByteLatentLightningModule(pl.LightningModule):
         pred = self.forward(batch_x, batch_patch_lengths, ngram_ids)
         loss, tok_loss = compute_loss(pred, batch_y, mask, scale=1.0)
         self.log("train_entropy_loss", loss, on_step=True, on_epoch=False, prog_bar=False)
+        self.log("train_perplexity", torch.exp(loss), on_step=True, on_epoch=False)
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -225,6 +226,7 @@ class ByteLatentLightningModule(pl.LightningModule):
 
         # Log validation metrics every step. Use prog_bar=True when on Chimera (won't work on UHN)
         self.log("val_entropy_loss", loss, on_step=True, on_epoch=False, prog_bar=False, sync_dist=True)
+        self.log("val_perplexity", torch.exp(loss), on_step=True, on_epoch=False, sync_dist=True)
 
     def configure_optimizers(self):
         optimizer, scheduler = build_optimizer(self.model, self.args.optim, self.args.steps)
@@ -251,13 +253,14 @@ class ByteLatentDataModule(pl.LightningDataModule):
         rank = self.trainer.global_rank if self.trainer is not None else 0
         world_size = self.trainer.world_size if self.trainer is not None else 1
         self.train_data_loader = self.args.data.build_from_rank(rank=rank, world_size=world_size, mode="train")
-        self.valid_data_loader = self.args.data.build_from_rank(rank=rank, world_size=world_size, mode="validation")
     
     def train_dataloader(self):
         return self.train_data_loader
     
     def val_dataloader(self):
-        return self.valid_data_loader
+        rank = self.trainer.global_rank if self.trainer is not None else 0
+        world_size = self.trainer.world_size if self.trainer is not None else 1
+        return self.args.data.build_from_rank(rank=rank, world_size=world_size, mode="validation")
     
     def transfer_batch_to_device(self, batch, device, dataloader_idx):
         """
@@ -315,27 +318,32 @@ def train(args: TrainArgs, test_mode = False):
     
     # Use test_mode parameter
     data_module = ByteLatentDataModule(args, test_mode=test_mode)
-    
 
-    # checkpoint_callback = ModelCheckpoint(
-    #     dirpath=args.checkpoint.path or os.path.join(args.dump_dir, "checkpoints"),
-    #     filename="{epoch}-{step}",
-    #     save_top_k=args.checkpoint.dump.keep if args.checkpoint.dump.keep > 0 else -1,
-    #     every_n_train_steps=args.checkpoint.dump.every,
-    #     save_on_train_epoch_end=False,
-    # )
+    # Set up Weights & Biases logger
+    wandb_logger = WandbLogger(project="byte-latent")
+
+    checkpoint_callback = ModelCheckpoint(
+        # dirpath=args.checkpoint.path or os.path.join(args.dump_dir, "checkpoints"),
+        filename="{step}-{val_entropy_loss:.2f}",
+        # save_top_k=args.checkpoint.dump.keep if args.checkpoint.dump.keep > 0 else -1,
+        monitor="val_entropy_loss",
+        mode="min",
+        save_top_k=1,
+        every_n_train_steps=args.checkpoint.dump.every,
+        save_on_train_epoch_end=False,
+    )
 
     trainer = pl.Trainer(
         max_steps=args.steps,
         strategy="ddp",
         accelerator="auto",
         devices=1,
-        # callbacks=checkpoint_callback,
+        callbacks=checkpoint_callback,
         gradient_clip_val=None, # must be none for fused adam
         accumulate_grad_batches=args.grad_acc_steps,
         precision="bf16-mixed",
         val_check_interval=args.checkpoint.dump.every,
-        logger = CSVLogger(save_dir="./lightning_logs", name="logs"),
+        logger=wandb_logger,
         enable_progress_bar=False,
         log_every_n_steps=50
     )
