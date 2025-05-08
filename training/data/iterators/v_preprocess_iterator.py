@@ -68,7 +68,7 @@ class PreprocessIterator:
             bs, seq_len = tokens.shape
             seq_len_next_tok = seq_len + 1 if include_next_token else seq_len
             patch_start_ids = find_entropy_patch_start_ids(
-                entropies, include_next_tok=include_next_token,
+                entropies, include_next_token=include_next_token,
                 threshold=self.patcher.threshold
             )
             patch_lengths = patch_lengths_from_start_ids(
@@ -97,82 +97,48 @@ class PreprocessIterator:
 
 # Vectorized patching
 
-# return patch_lengths[0], scores
+def patch_start_ids_from_patch_start_mask(patch_start_mask):
+    bs, trunc_seq_len = patch_start_mask.shape
+    max_patches = patch_start_mask.sum(dim=1).max()
+    if max_patches == 0:
+        patch_start_ids = torch.full((bs, trunc_seq_len), trunc_seq_len, dtype=torch.long, device=patch_start_mask.device)
+    else:
+        patch_ids = torch.arange(trunc_seq_len, device=patch_start_mask.device).unsqueeze(0).repeat(bs, 1)
+        extra_patch_ids = torch.full((bs, trunc_seq_len), trunc_seq_len + 1, dtype=torch.long, device=patch_start_mask.device)
+        all_patch_ids = torch.cat((patch_ids, extra_patch_ids), dim=1)
+        patch_start_mask_padded = torch.cat((patch_start_mask, ~patch_start_mask), dim=1)
+        patch_start_ids = all_patch_ids[patch_start_mask_padded].reshape(bs, trunc_seq_len)[:, :max_patches]
+    return patch_start_ids
 
-def patch_start_ids_from_patch_start_mask(mask: torch.Tensor) -> torch.LongTensor:
+def find_entropy_patch_start_ids(entropies, patch_size=None, threshold=None, threshold_add=None, monotonicity=False, include_next_token=True):
     """
-    mask : [B, L′] boolean – True where a patch should start
-    returns a tensor [B, P_max] containing the start indices
-            (filled with L′ where a row has fewer than P_max patches)
+    Uses entropies to compute patch start IDs. If threshold is provided, patches are defined incrementally.
+    Otherwise, a fixed number of patches (derived from patch_size) is used.
     """
-    B, L = mask.shape
-    max_patches = int(mask.sum(1).max().item())
-
-    if max_patches == 0:                                  # no patches at all
-        return torch.full((B, 1), L, dtype=torch.long, device=mask.device)
-
-    patch_ids = torch.arange(L, device=mask.device).expand(B, -1)     # [B, L]
-    sentinel  = torch.full_like(patch_ids, L)                         # pad value
-    # boolean concat trick from the original code
-    all_ids   = torch.cat([patch_ids, sentinel], dim=1)               # [B, 2L]
-    padded_m  = torch.cat([mask, ~mask], dim=1)                       # [B, 2L]
-
-    out = all_ids[padded_m].view(B, L)[:, :max_patches]               # [B, P_max]
-    return out
-
-def find_entropy_patch_start_ids(
-    entropies:        torch.Tensor,        # [B, L]
-    threshold:        float | None = None,
-    include_next_tok: bool  = True,
-) -> torch.LongTensor:
-    """
-    Exact batched analogue of your original single-example routine.
-    Returns a LongTensor [B, 2+P] whose first two columns are 0 and 1.
-    """
-    B, L = entropies.shape
-    dev   = entropies.device
-
-    # -----------------------------------------------------------------
-    # the “always present” first two tokens
-    first_two = torch.tensor([0, 1], device=dev).expand(B, 2)  # [B, 2]
-    preds_trunc_len = 2
-
-    # all work happens on the truncated view (drop token-0)
-    ent = entropies[:, 1:]                                     # [B, L-1]
-    L_trunc = L - 1
-
-    patch_mask = ent > threshold                            # [B, L-1]
-
-    if not include_next_tok:
-        patch_mask = patch_mask[:, :-1]                         # drop last column
-
-    patch_start_ids = patch_start_ids_from_patch_start_mask(patch_mask)
-
-    # -----------------------------------------------------------------
-    # re-add the 0/1 prefix and offset by +2  -------------------------
-    patch_start_ids = torch.cat([first_two,
-                                 patch_start_ids + preds_trunc_len], dim=1)
-    return patch_start_ids  
+    bs, seq_len = entropies.shape[:2]
+    first_ids = torch.tensor([0, 1], dtype=torch.long, device=entropies.device).unsqueeze(0).repeat(bs, 1)
+    preds_truncation_len = first_ids.shape[1]
+    entropies = entropies[:, 1:]
+    patch_start_mask = entropies > threshold
+    if not include_next_token:
+        patch_start_mask = patch_start_mask[:, :-1]
+    patch_start_ids = patch_start_ids_from_patch_start_mask(patch_start_mask)
+    patch_start_ids = torch.cat((first_ids, patch_start_ids + preds_truncation_len), dim=1)
+    return patch_start_ids
 
 # ---------------------------------------------------------------------
 # 2. Patch-start indices → patch lengths
 # ---------------------------------------------------------------------
-def patch_lengths_from_start_ids(
-        start_ids: torch.Tensor,
-        seq_len: int
-) -> torch.LongTensor:
+def patch_lengths_from_start_ids(patch_start_ids, seq_len):
     """
-    start_ids  : [B, N]  (padded with seq_len)
-    returns    : [B, N]  (0-padded)
+    Given patch start IDs (with extra padding), compute the patch lengths.
     """
-    # NB: start_ids == seq_len is *padding*, not a real patch
-    last_tok = torch.full_like(start_ids[:, :1], seq_len - 1)
-    end_ids  = torch.cat([start_ids[:, 1:] - 1, last_tok], dim=1)
-
-    lengths = (end_ids - start_ids + 1).clamp_min(0)
-    lengths.masked_fill_(start_ids == seq_len, 0)        # wipe padding rows
-
-    return lengths                                       # [B, N]
+    last_ids = torch.full_like(patch_start_ids[:, :1], seq_len - 1)
+    patch_end_ids = torch.cat((patch_start_ids[:, 1:] - 1, last_ids), dim=1)
+    patch_lengths = patch_end_ids - patch_start_ids + 1
+    assert torch.all(patch_lengths >= 0), f"{patch_lengths}"
+    # assert not check_non_zero_after_zero(patch_lengths), f"{patch_lengths}"
+    return patch_lengths                              # [B, N]
 
 
 # ---------------------------------------------------------------------

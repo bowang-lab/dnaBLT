@@ -126,7 +126,7 @@ def patch_start_ids_from_patch_start_mask(patch_start_mask):
         patch_start_ids = torch.full((bs, trunc_seq_len), trunc_seq_len, dtype=torch.long, device=patch_start_mask.device)
     else:
         patch_ids = torch.arange(trunc_seq_len, device=patch_start_mask.device).unsqueeze(0).repeat(bs, 1)
-        extra_patch_ids = torch.full((bs, trunc_seq_len), trunc_seq_len, dtype=torch.long, device=patch_start_mask.device)
+        extra_patch_ids = torch.full((bs, trunc_seq_len), trunc_seq_len + 1, dtype=torch.long, device=patch_start_mask.device)
         all_patch_ids = torch.cat((patch_ids, extra_patch_ids), dim=1)
         patch_start_mask_padded = torch.cat((patch_start_mask, ~patch_start_mask), dim=1)
         patch_start_ids = all_patch_ids[patch_start_mask_padded].reshape(bs, trunc_seq_len)[:, :max_patches]
@@ -389,7 +389,6 @@ class Patcher:
             patch_lengths = patch_lengths_from_start_ids(patch_start_ids, seq_len_next_tok)
         else:
             raise NotImplementedError(f"self.patching_mode {self.patching_mode}")
-
         if self.max_patch_length is not None:
             patch_lengths = [split_large_numbers(pl, self.max_patch_length) for pl in patch_lengths.tolist()]
             max_len = max(len(pl) for pl in patch_lengths)
