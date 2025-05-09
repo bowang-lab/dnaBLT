@@ -65,34 +65,37 @@ class SequenceIterator:
             pl_batch: torch.Tensor = example.patch_lengths           # [B, P]
             device = tk_batch.device
 
-            # -------- Flatten the batch into a stream of patches -------- #
-            # Determine processing order: random permutation for better mixing,
-            # or sequential if no RNG was supplied.
-            row_indices = (
-                self.rng.permutation(len(tk_batch))
-                if self.rng is not None
-                else range(len(tk_batch))
-            )
-            for idx in row_indices:
-                row_tokens = tk_batch[idx]
-                row_pl     = pl_batch[idx]
-                # Keep patch‑lengths on the **CPU** to avoid a host⇄device sync
-                # when we materialise them as Python ints.
-                lengths = row_pl.cpu()
-                lengths = lengths[lengths.ne(0)]           # drop zero‑length slots
-                if lengths.numel() == 0:
-                    continue
+            # -------- Vectorised flatten of the whole batch -------- #
+            # 1. Optional row‑level permutation for better mixing.
+            if self.rng is not None:
+                perm = torch.as_tensor(
+                    self.rng.permutation(len(tk_batch)),
+                    dtype=torch.long,
+                    device=tk_batch.device,
+                )
+                tk_batch = tk_batch.index_select(0, perm)
+                pl_batch = pl_batch.index_select(0, perm)
 
-                # Trim away padding once, then cut into patches in C++
-                total_tokens = int(lengths.sum())
-                row_tokens = row_tokens[: total_tokens]
+            # 2. Extract patch lengths, discarding any zero‑length slots in a single call.
+            valid_mask   = pl_batch.ne(0)
+            flat_lengths = pl_batch[valid_mask]          # 1‑D tensor of all patch lengths
+            if flat_lengths.numel() == 0:
+                continue  # the whole batch was padding
 
-                # torch.split_with_sizes does the heavy lifting in a single call
-                patches = torch.split(row_tokens, lengths.tolist())
+            # 3. Trim away right‑padding tokens *vectorially*.
+            row_token_totals = pl_batch.sum(dim=1)       # total real tokens per row
+            T = tk_batch.size(1)
+            arange_t = torch.arange(T, device=device).expand_as(tk_batch)
+            keep_mask = arange_t < row_token_totals.unsqueeze(1)
+            flat_tokens = tk_batch[keep_mask]            # flattened stream of real tokens
 
-                # Running buffers keep a *patch‑level* alignment
-                toks_buf.extend(patches)          # one tensor per patch
-                lens_buf.extend(lengths.tolist()) # matching scalar lengths
+            # 4. Split the flattened token stream into individual patches. Each split
+            #    is executed in highly‑optimised C++.
+            patches = torch.split(flat_tokens, flat_lengths.tolist())
+
+            # 5. Append to running buffers that maintain *patch‑level* alignment.
+            toks_buf.extend(patches)                     # one tensor per patch
+            lens_buf.extend(flat_lengths.tolist())       # matching scalar lengths
             
             while cursor + max_seq <= len(lens_buf):
                 end = cursor + max_seq
@@ -115,18 +118,19 @@ class SequenceIterator:
             self._compact_buffers()
 
         # -------- Final flush so *no tokens are ever dropped* -------- #
-        remaining = len(lens_buf) - cursor
-        if remaining:
-            seq_lens = lens_buf[cursor:]                 # leftover patch lengths
-            pad      = max_seq - remaining               # how many zero‑length slots
-            seq_lens += [0] * pad                        # right‑pad to MAX_SEQLEN
+        # NOTE: This cooks the x_patch_lengths guard in the PackingIterator logic.
+        # remaining = len(lens_buf) - cursor
+        # if remaining:
+        #     seq_lens = lens_buf[cursor:]                 # leftover patch lengths
+        #     pad      = max_seq - remaining               # how many zero‑length slots
+        #     seq_lens += [0] * pad                        # right‑pad to MAX_SEQLEN
 
-            seq_toks = torch.cat(toks_buf[cursor:]) if remaining else torch.empty(0, device=device)
+        #     seq_toks = torch.cat(toks_buf[cursor:]) if remaining else torch.empty(0, device=device)
 
-            yield PackedSequence(
-                tokens=seq_toks,
-                patch_lengths=torch.tensor(seq_lens, device=device, dtype=torch.long),
-            )
+        #     yield PackedSequence(
+        #         tokens=seq_toks,
+        #         patch_lengths=torch.tensor(seq_lens, device=device, dtype=torch.long),
+        #     )
 
     def _compact_buffers(self) -> None:
         """Drop consumed patches when cursor grows large to keep memory bounded."""

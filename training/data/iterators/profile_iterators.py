@@ -131,39 +131,37 @@ def vectorized_iterator_patch_lengths():
         )
     
 
-    preprocess_iterator = iter(PreprocessIterator(
+    preprocess_iterator = PreprocessIterator(
             arrow_batch_iterator=arrow_iterator,
             add_patches=True,
             patcher_args=args.patcher_args,
-        ))
+        )
 
-    # sequence_iterator = SequenceIterator(
-    #         preprocess_iterator=preprocess_iterator,
-    #         max_seq_patches=args.seq_len
-    #         * args.buffer_size,  # add one for separate EOS token patch
-    #     )
+    sequence_iterator = SequenceIterator(
+            preprocess_iterator=preprocess_iterator,
+            max_seq_patches=args.seq_len
+            * args.buffer_size,  # add one for separate EOS token patch
+    )
 
-    # packing_args = PackingArgs(
-    #     batch_size=args.batch_size,
-    #     seq_len=args.seq_len,
-    #     pad_id=0,
-    #     max_length=args.max_encoder_seq_length,
-    #     pad_to_max_length=args.pad_to_max_length,
-    #     enable_byte_ngrams=args.enable_byte_ngrams,
-    #     packing_mode=PackingMode.PATCHING,
-    # )
+    packing_args = PackingArgs(
+        batch_size=args.batch_size,
+        seq_len=args.seq_len,
+        pad_id=0,
+        max_length=args.max_encoder_seq_length,
+        pad_to_max_length=args.pad_to_max_length,
+        enable_byte_ngrams=args.enable_byte_ngrams,
+        packing_mode=PackingMode.PATCHING,
+    )
 
-    # packing_iterator = iter(
-    #     PackingIterator(
-    #         sequence_iterator=sequence_iterator,
-    #         packing_args=packing_args,
-    #     )
-    # )
+    packing_iterator = iter(
+        PackingIterator(
+            sequence_iterator=sequence_iterator,
+            packing_args=packing_args,
+        )
+    )
 
     # batch = next(packing_iterator)
-    batch = next(preprocess_iterator)
-    while 0 not in batch.tokens:
-        batch = next(preprocess_iterator)
+    batch = next(packing_iterator)
     return batch
 
 # token_sums.append(batch.mask.sum().item())
@@ -181,13 +179,9 @@ def vectorized_iterator_patch_lengths():
 # print("Real patch ratio:", sum(patch_sums) / (16 * 4096 * batches))
 
 if __name__ == "__main__":
-    # batch1 = serialize_iterator_patch_lengths()
-    batch2 = vectorized_iterator_patch_lengths()
-    import IPython
-    ns = locals().copy()
-    ns.update(globals())
-    IPython.embed(user_ns=ns)
-    exit()
+    batch1 = serialize_iterator_patch_lengths()
+    # batch2 = vectorized_iterator_patch_lengths()
+    # batch = get_batch()
     # series_iterator_patch_lengths()
 
 """

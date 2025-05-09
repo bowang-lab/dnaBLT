@@ -226,8 +226,9 @@ class PackingIterator:
             running_patch_lengths = patch_lengths
             running_masks = masks
         
-        if running_toks is not None and running_toks.shape[0] > 0:
-            yield Batch(x=running_toks, y=running_y, mask=running_masks, patch_lengths=running_patch_lengths)
+        # See comment in sequence iterator
+        # if running_toks is not None and running_toks.shape[0] > 0:
+        #     yield Batch(x=running_toks, y=running_y, mask=running_masks, patch_lengths=running_patch_lengths)
 
 
 def truncate_and_rectangularise(

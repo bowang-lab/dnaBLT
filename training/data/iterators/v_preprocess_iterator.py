@@ -1,4 +1,3 @@
-# Proposed change for /Users/arnavshah/Code/dnaBLT/training/data/iterators/preprocess_iterator.py
 import pyarrow as pa
 import torch
 from torch.nn.utils.rnn import pad_sequence
@@ -62,17 +61,17 @@ class PreprocessIterator:
             # --- Tokenization (Common Step) ---
             tokenized = [torch.cat((torch.frombuffer(bytearray(s.encode("utf-8", errors="ignore")), dtype=torch.uint8).long() + 4, torch.tensor([EOS_ID]))) for s in texts]
             tokens = pad_sequence(tokenized, batch_first=True, padding_value=0)
+            # True (non‑padding) length of each sequence
+            seq_lengths = (tokens != 0).sum(dim=1)
             entropies = pad_sequence([torch.tensor(e, dtype=torch.float32) for e in entropies_list], batch_first=True, padding_value=0)
             # --- Prepare Output Lists ---
             include_next_token = False
-            bs, seq_len = tokens.shape
-            seq_len_next_tok = seq_len + 1 if include_next_token else seq_len
             patch_start_ids = find_entropy_patch_start_ids(
                 entropies, include_next_token=include_next_token,
                 threshold=self.patcher.threshold
             )
             patch_lengths = patch_lengths_from_start_ids(
-                patch_start_ids, seq_len_next_tok
+                patch_start_ids, seq_lengths
             )
 
             patch_lengths = split_large_numbers_tensor(
@@ -89,6 +88,8 @@ class PreprocessIterator:
                 tokens=tokens,
                 patch_lengths=patch_lengths
             )
+
+            # TODO: Make patch packing + batch truncation work with new BltExample object
 
 
     def __iter__(self):
@@ -129,16 +130,32 @@ def find_entropy_patch_start_ids(entropies, patch_size=None, threshold=None, thr
 # ---------------------------------------------------------------------
 # 2. Patch-start indices → patch lengths
 # ---------------------------------------------------------------------
-def patch_lengths_from_start_ids(patch_start_ids, seq_len):
+def patch_lengths_from_start_ids(patch_start_ids, seq_lens):
     """
-    Given patch start IDs (with extra padding), compute the patch lengths.
+    Compute patch lengths given patch start IDs, ensuring that each row’s
+    lengths sum to the number of non-padding tokens and never go negative.
     """
-    last_ids = torch.full_like(patch_start_ids[:, :1], seq_len - 1)
-    patch_end_ids = torch.cat((patch_start_ids[:, 1:] - 1, last_ids), dim=1)
-    patch_lengths = patch_end_ids - patch_start_ids + 1
-    assert torch.all(patch_lengths >= 0), f"{patch_lengths}"
-    # assert not check_non_zero_after_zero(patch_lengths), f"{patch_lengths}"
-    return patch_lengths                              # [B, N]
+    # Ensure everything is on the same device
+    seq_lens = seq_lens.to(patch_start_ids.device)              # [B]
+    seq_lens_row = seq_lens.unsqueeze(1)                        # [B,1]
+
+    # Next patch start (or seq_len if this is the last patch)
+    next_start = torch.cat((patch_start_ids[:, 1:], seq_lens_row), dim=1)
+
+    # End idx is min(next_start-1, last real token)
+    end_ids = torch.minimum(next_start - 1, seq_lens_row - 1)
+
+    # Raw lengths
+    lengths = end_ids - patch_start_ids + 1
+
+    # Zero-out any positions where the start is already past the sequence end
+    valid_mask = patch_start_ids < seq_lens_row
+    lengths = torch.where(valid_mask, lengths, torch.zeros_like(lengths))
+
+    # Extra safety in case clipping still left negatives
+    # lengths.clamp_min_(0)
+
+    return lengths
 
 
 # ---------------------------------------------------------------------

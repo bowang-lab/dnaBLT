@@ -129,6 +129,7 @@ class ByteLatentLightningModule(pl.LightningModule):
             return self.model(x, patch_lengths=patch_lengths, ngram_ids=ngram_ids)
     
     def training_step(self, batch, batch_idx):
+        # TODO: Profile code. Data is slow, but is it *that* slow? How much time spent on forward/backward pass, is it as expected?
         batch_x = batch.x
         batch_y = batch.y
         batch_patch_lengths = batch.patch_lengths  # may be None
@@ -160,19 +161,19 @@ class ByteLatentLightningModule(pl.LightningModule):
             self.print(f"Computed ngram_ids with shape: {ngram_ids.shape}")
 
 
-        if batch_patch_lengths is not None and isinstance(batch_patch_lengths, np.ndarray):
-             batch_patch_lengths = torch.tensor(batch_patch_lengths, device=batch_x.device) 
-        # Update byte count for metrics based on tokenizer type
-        elif self.args.data.tokenizer_args.name in ["sp", "tiktoken"]:
-            for example in batch.y:
-                target_tokens = self.tokenizer.decode(example.tolist())
-                self.n_bytes += (
-                    len(target_tokens.encode("utf-8")) +
-                    (example == self.tokenizer.eos_id).sum().item() +
-                    (example == self.tokenizer.bos_id).sum().item()
-                )
-        else:
-            raise ValueError(f"Unexpected tokenizer: {self.args.data.tokenizer_args.name}")
+        # if batch_patch_lengths is not None and isinstance(batch_patch_lengths, np.ndarray):
+        #      batch_patch_lengths = torch.tensor(batch_patch_lengths, device=batch_x.device) 
+        # # Update byte count for metrics based on tokenizer type
+        # elif self.args.data.tokenizer_args.name in ["sp", "tiktoken"]:
+        #     for example in batch.y:
+        #         target_tokens = self.tokenizer.decode(example.tolist())
+        #         self.n_bytes += (
+        #             len(target_tokens.encode("utf-8")) +
+        #             (example == self.tokenizer.eos_id).sum().item() +
+        #             (example == self.tokenizer.bos_id).sum().item()
+        #         )
+        # else:
+        #     raise ValueError(f"Unexpected tokenizer: {self.args.data.tokenizer_args.name}")
         
         # Forward pass and loss computation
         pred = self.forward(batch_x, batch_patch_lengths, ngram_ids)
@@ -182,13 +183,14 @@ class ByteLatentLightningModule(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
+        # FIXME: Validation step did not run in wandb log? Nor did checkpointing?
         batch_x = batch.x
         batch_y = batch.y
         batch_patch_lengths = batch.patch_lengths  # may be None
         mask = batch.mask  # may be None
         ngram_ids = batch.ngram_ids  # may be None
-        if batch_patch_lengths is not None and isinstance(batch_patch_lengths, np.ndarray):
-             batch_patch_lengths = torch.tensor(batch_patch_lengths, device=batch_x.device)
+        # if batch_patch_lengths is not None and isinstance(batch_patch_lengths, np.ndarray):
+        #      batch_patch_lengths = torch.tensor(batch_patch_lengths, device=batch_x.device)
         if self.args.model.encoder_enable_byte_ngrams and ngram_ids is None:
         # Ensure that you have a valid directory for the ngram tables in your args.
             if not hasattr(self.args.model, "encoder_ngram_table_dir") or self.args.model.encoder_ngram_table_dir is None:

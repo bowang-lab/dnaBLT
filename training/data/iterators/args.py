@@ -158,7 +158,7 @@ class DataloaderArgs(BaseModel):
     # entropy_model_name: str | None = "transformer_100m"
     entropy_model_name: str | None = None
     arrow_batch_size: int = 16 # can't be larger unless we want to rewrite the entropy tensors.
-    buffer_size: int = 100
+    buffer_size: int = 64
     file_format: str = "arrow"
 
     pad_to_max_length: bool = True
@@ -219,7 +219,6 @@ class DataloaderArgs(BaseModel):
         )
         tokenizer = self.tokenizer_args.build()
         if self.tokenizer_args.name == "bytes":
-            # TODO: Check this with Artidoro
             pad_id = 0
         else:
             pad_id = tokenizer.boe_id

@@ -215,7 +215,6 @@ class DataloaderArgs(BaseModel):
         )
         tokenizer = self.tokenizer_args.build()
         if self.tokenizer_args.name == "bytes":
-            # TODO: Check this with Artidoro
             pad_id = 0
         else:
             pad_id = tokenizer.boe_id
