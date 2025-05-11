@@ -2,7 +2,7 @@ import time
 from args import DataloaderArgs, find_and_sanitize_chunks
 
 from preprocess_iterator import PreprocessIterator as PreprocessIteratorOld
-from packing_iterator import PackingIterator as PackingIteratorOld
+from packing_iterator import PackingIterator as PackingIteratorOld, PackingArgs as PackingArgsOld
 from arrow_iterator import ArrowFileIterator as ArrowFileIteratorOld
 from sequence_iterator import SequenceIterator as SequenceIteratorOld, SequencePackingArgs
 
@@ -33,10 +33,10 @@ def get_batch():
     batch = next(train_loader)
     return batch
 
-def serialize_iterator_patch_lengths():
+def serialize_iterator():
     file_format = args.file_format
     dataset_path = args.root_dir
-    entropy_files = "entropies_validation0.arrow"
+    entropy_files = "entropies_validation0_repeated.arrow"
     preprocess_dir = args.preprocess_dir
     entropy_model_name = args.entropy_model_name
     arrow_batch_size = args.arrow_batch_size
@@ -79,7 +79,7 @@ def serialize_iterator_patch_lengths():
         sequence_packing_config=sequence_packing_args,
         # rng_state=shuffle_rng_state,
     )
-    packing_args = PackingArgs(
+    packing_args = PackingArgsOld(
         batch_size=16,
         seq_len=4096,
         pad_id=0,
@@ -91,20 +91,13 @@ def serialize_iterator_patch_lengths():
     )
     packing_iterator = iter(PackingIteratorOld(sequence_iterator, packing_args=packing_args))
 
-    # batch = []
-    # for _ in range(16):
-    #     batch.append(next(preprocess_iterator).tokens)
-    batch = next(packing_iterator)
-    # batch = next(preprocess_iterator)
-    return batch
+    return packing_iterator
     
-    # print("Arrow iterator:", type(arrow_iterator))
-    # print("Arrow iterator:", next(arrow_iterator)) 
 
-def vectorized_iterator_patch_lengths():
+def vectorized_iterator():
     file_format = args.file_format
     dataset_path = args.root_dir
-    entropy_files = "entropies_validation0.arrow"
+    entropy_files = "entropies_validation0_repeated.arrow"
     preprocess_dir = args.preprocess_dir
     entropy_model_name = args.entropy_model_name
     arrow_batch_size = args.arrow_batch_size
@@ -144,25 +137,22 @@ def vectorized_iterator_patch_lengths():
     )
 
     packing_args = PackingArgs(
-        batch_size=args.batch_size,
-        seq_len=args.seq_len,
+        batch_size=16,
+        seq_len=4096,
         pad_id=0,
-        max_length=args.max_encoder_seq_length,
-        pad_to_max_length=args.pad_to_max_length,
-        enable_byte_ngrams=args.enable_byte_ngrams,
-        packing_mode=PackingMode.PATCHING,
+        max_length=8192,
+        pad_to_max_length=True,
+        enable_byte_ngrams=False,
+        packing_mode=PackingMode.PATCHING
     )
 
-    packing_iterator = iter(
-        PackingIterator(
+    packing_iterator = iter(PackingIterator(
             sequence_iterator=sequence_iterator,
             packing_args=packing_args,
-        )
-    )
+        ))
+    
 
-    # batch = next(packing_iterator)
-    batch = next(packing_iterator)
-    return batch
+    return packing_iterator
 
 # token_sums.append(batch.mask.sum().item())
 # patch_sums.append(batch.patch_lengths.flatten().nonzero()[0].shape[0])
@@ -179,15 +169,29 @@ def vectorized_iterator_patch_lengths():
 # print("Real patch ratio:", sum(patch_sums) / (16 * 4096 * batches))
 
 if __name__ == "__main__":
-    batch1 = serialize_iterator_patch_lengths()
-    # batch2 = vectorized_iterator_patch_lengths()
-    # batch = get_batch()
-    # series_iterator_patch_lengths()
+    # s_iter = serialize_iterator()
+    v_iter = vectorized_iterator()
 
-"""
+    # batch1 = next(s_iter)
+    batch2 = next(v_iter)
+    sum_ = 0
 
-batch1.x[0] == batch2.x[0]
-batch2.x[1, 2:] == batch1.x[1, :-2] <- translated two to the right?
-batch2.x[1, 8:] == batch1.x[1, :-8] <- translated eight to the right?
+    while True:
+        try:
+            batch2 = next(v_iter)
+        except StopIteration:
+            break
+    
 
-"""
+    # i = 1
+    # while (batch1 is not None) and (batch2 is not None):
+    #     assert torch.from_numpy(batch1.x).eq(batch2.x).all(), f"Failed assert on iteration {i}. Batch1: {batch1.x} Batch2: {batch2.x}"
+    #     assert torch.from_numpy(batch1.y).eq(batch2.y).all(), f"Failed assert on iteration {i}. Batch1: {batch1.y} Batch2: {batch2.y}"
+    #     assert torch.from_numpy(batch1.mask).eq(batch2.mask).all()
+    #     assert torch.from_numpy(batch1.patch_lengths).eq(batch2.patch_lengths).all()
+    #     batch1 = next(s_iter)
+    #     batch2 = next(v_iter)
+    #     i += 1
+
+    
+    # assert (batch1 is None) and (batch2 is None)

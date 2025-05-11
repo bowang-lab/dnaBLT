@@ -171,3 +171,4 @@ internal/
 jobs_parallel-copy/
 wandb/
 
+outputs/entropies_validation0_repeated.arrow

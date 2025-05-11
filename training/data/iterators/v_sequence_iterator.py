@@ -101,6 +101,7 @@ class SequenceIterator:
                 end = cursor + max_seq
                 seq_lens = lens_buf[cursor:end]            # Python list slice (cheap)
                 seq_toks = torch.cat(toks_buf[cursor:end])  # Concatenate once
+                print(len(seq_lens) / 4096)
 
                 yield PackedSequence(
                     tokens=seq_toks,
@@ -120,9 +121,9 @@ class SequenceIterator:
         # -------- Final flush so *no tokens are ever dropped* -------- #
         # NOTE: This cooks the x_patch_lengths guard in the PackingIterator logic.
         # remaining = len(lens_buf) - cursor
-        # if remaining:
+        # if remaining > 0:
         #     seq_lens = lens_buf[cursor:]                 # leftover patch lengths
-        #     pad      = max_seq - remaining               # how many zero‑length slots
+        #     pad = max_seq - remaining               # how many zero‑length slots
         #     seq_lens += [0] * pad                        # right‑pad to MAX_SEQLEN
 
         #     seq_toks = torch.cat(toks_buf[cursor:]) if remaining else torch.empty(0, device=device)
