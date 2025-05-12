@@ -42,7 +42,6 @@ class SequenceIterator:
         # Use plain lists and a cursor index instead of deques
         self._patch_tokens: List[torch.Tensor] = []
         self._patch_lengths: List[int] = []
-        self._cursor: int = 0  # index of the first un‑consumed patch
 
         if rng_state is None:
             self.rng = None
@@ -57,9 +56,7 @@ class SequenceIterator:
         max_seq  = self._max_seq
         toks_buf = self._patch_tokens
         lens_buf = self._patch_lengths
-        cursor   = self._cursor
         device = torch.device("cpu")   # will be updated on the first real example
-
         for example in self._src_iter.create_iter():
             tk_batch: torch.Tensor = example.tokens                  # [B, T]
             pl_batch: torch.Tensor = example.patch_lengths           # [B, P]
@@ -97,49 +94,34 @@ class SequenceIterator:
             toks_buf.extend(patches)                     # one tensor per patch
             lens_buf.extend(flat_lengths.tolist())       # matching scalar lengths
             
-            while cursor + max_seq <= len(lens_buf):
-                end = cursor + max_seq
-                seq_lens = lens_buf[cursor:end]            # Python list slice (cheap)
-                seq_toks = torch.cat(toks_buf[cursor:end])  # Concatenate once
-                print(len(seq_lens) / 4096)
+            while len(lens_buf) >= max_seq:
+                seq_lens = lens_buf[:max_seq]            # Python list slice (cheap)
+                seq_toks = torch.cat(toks_buf[:max_seq])  # Concatenate once
 
                 yield PackedSequence(
                     tokens=seq_toks,
                     patch_lengths=torch.tensor(seq_lens, device=device, dtype=torch.long),
                 )
-                cursor = end
 
-                # Periodically drop consumed prefix to keep memory bounded
-                if cursor > 4 * max_seq and cursor % (4 * max_seq) == 0:
-                    del toks_buf[:cursor]
-                    del lens_buf[:cursor]
-                    cursor = 0
-
-            self._cursor = cursor
-            self._compact_buffers()
+                lens_buf = lens_buf[max_seq:]            # Remove processed items
+                toks_buf = toks_buf[max_seq:]            # Remove processed items
 
         # -------- Final flush so *no tokens are ever dropped* -------- #
-        # NOTE: This cooks the x_patch_lengths guard in the PackingIterator logic.
         # remaining = len(lens_buf) - cursor
         # if remaining > 0:
-        #     seq_lens = lens_buf[cursor:]                 # leftover patch lengths
-        #     pad = max_seq - remaining               # how many zero‑length slots
-        #     seq_lens += [0] * pad                        # right‑pad to MAX_SEQLEN
+        #     # Copy remaining patch‑lengths and right‑pad with zeros to MAX_SEQLEN
+        #     seq_lens = lens_buf[cursor:].copy()
+        #     pad = max_seq - remaining
+        #     if pad:
+        #         seq_lens += [0] * pad
 
+        #     # Concatenate remaining token patches (may be empty if only padding)
         #     seq_toks = torch.cat(toks_buf[cursor:]) if remaining else torch.empty(0, device=device)
 
         #     yield PackedSequence(
         #         tokens=seq_toks,
         #         patch_lengths=torch.tensor(seq_lens, device=device, dtype=torch.long),
         #     )
-
-    def _compact_buffers(self) -> None:
-        """Drop consumed patches when cursor grows large to keep memory bounded."""
-        if self._cursor > 4 * self._max_seq:
-            # remove consumed prefix
-            del self._patch_tokens[: self._cursor]
-            del self._patch_lengths[: self._cursor]
-            self._cursor = 0
 
     # ------------------------------ Utilities ---------------------------- #
     def __len__(self) -> int:  # optional, not strictly required
