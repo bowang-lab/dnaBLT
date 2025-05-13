@@ -68,7 +68,7 @@ class PreprocessIterator:
             include_next_token = False
             patch_start_ids = find_entropy_patch_start_ids(
                 entropies, include_next_token=include_next_token,
-                threshold=self.patcher.threshold
+                threshold=self.patcher.threshold, seq_lengths=seq_lengths,
             )
             patch_lengths = patch_lengths_from_start_ids(
                 patch_start_ids, seq_lengths
@@ -111,7 +111,7 @@ def patch_start_ids_from_patch_start_mask(patch_start_mask):
         patch_start_ids = all_patch_ids[patch_start_mask_padded].reshape(bs, trunc_seq_len)[:, :max_patches]
     return patch_start_ids
 
-def find_entropy_patch_start_ids(entropies, patch_size=None, threshold=None, threshold_add=None, monotonicity=False, include_next_token=True):
+def find_entropy_patch_start_ids(entropies, seq_lengths, threshold=None, include_next_token=True):
     """
     Uses entropies to compute patch start IDs. If threshold is provided, patches are defined incrementally.
     Otherwise, a fixed number of patches (derived from patch_size) is used.
@@ -122,7 +122,10 @@ def find_entropy_patch_start_ids(entropies, patch_size=None, threshold=None, thr
     entropies = entropies[:, 1:]
     patch_start_mask = entropies > threshold
     if not include_next_token:
-        patch_start_mask = patch_start_mask[:, :-1]
+        arange = torch.arange(seq_len - 1).expand(bs, seq_len - 1)
+        mask = arange != (seq_lengths - 3).unsqueeze(1)
+        patch_start_mask = patch_start_mask[mask].reshape(bs, seq_len - 2)
+        # patch_start_mask = patch_start_mask[:, :-1]
     patch_start_ids = patch_start_ids_from_patch_start_mask(patch_start_mask)
     patch_start_ids = torch.cat((first_ids, patch_start_ids + preds_truncation_len), dim=1)
     return patch_start_ids

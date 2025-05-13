@@ -74,24 +74,24 @@ def serialize_iterator():
         add_patches=args.add_patches,
     )
 
-    # sequence_iterator = SequenceIteratorOld(
-    #     preprocess_iterator,
-    #     sequence_packing_config=sequence_packing_args,
-    #     # rng_state=shuffle_rng_state,
-    # )
-    # packing_args = PackingArgsOld(
-    #     batch_size=16,
-    #     seq_len=4096,
-    #     pad_id=0,
-    #     max_length=8192,
-    #     pad_to_max_length=True,
-    #     enable_byte_ngrams=False,
-    #     packing_mode=PackingMode.PATCHING
+    sequence_iterator = SequenceIteratorOld(
+        preprocess_iterator,
+        sequence_packing_config=sequence_packing_args,
+        # rng_state=shuffle_rng_state,
+    )
+    packing_args = PackingArgsOld(
+        batch_size=16,
+        seq_len=4096,
+        pad_id=0,
+        max_length=8192,
+        pad_to_max_length=True,
+        enable_byte_ngrams=False,
+        packing_mode=PackingMode.PATCHING
 
-    # )
-    # packing_iterator = iter(PackingIteratorOld(sequence_iterator, packing_args=packing_args))
+    )
+    packing_iterator = PackingIteratorOld(sequence_iterator, packing_args=packing_args)
 
-    return iter(preprocess_iterator)
+    return iter(packing_iterator)
     
 
 def vectorized_iterator():
@@ -130,85 +130,85 @@ def vectorized_iterator():
             patcher_args=args.patcher_args,
         )
 
-    # sequence_iterator = SequenceIterator(
-    #         preprocess_iterator=preprocess_iterator,
-    #         max_seq_patches=args.seq_len
-    #         * args.buffer_size,  # add one for separate EOS token patch
-    # )
+    sequence_iterator = SequenceIterator(
+            preprocess_iterator=preprocess_iterator,
+            max_seq_patches=args.seq_len
+            * args.buffer_size,  # add one for separate EOS token patch
+    )
 
-    # packing_args = PackingArgs(
-    #     batch_size=16,
-    #     seq_len=4096,
-    #     pad_id=0,
-    #     max_length=8192,
-    #     pad_to_max_length=True,
-    #     enable_byte_ngrams=False,
-    #     packing_mode=PackingMode.PATCHING
-    # )
+    packing_args = PackingArgs(
+        batch_size=16,
+        seq_len=4096,
+        pad_id=0,
+        max_length=8192,
+        pad_to_max_length=True,
+        enable_byte_ngrams=False,
+        packing_mode=PackingMode.PATCHING
+    )
 
-    # packing_iterator = iter(PackingIterator(
-    #         sequence_iterator=sequence_iterator,
-    #         packing_args=packing_args,
-    #     ))
+    packing_iterator = PackingIterator(
+            sequence_iterator=sequence_iterator,
+            packing_args=packing_args,
+        )
     
 
-    return iter(preprocess_iterator)
+    return iter(packing_iterator)
 
 if __name__ == "__main__":
-    s_iter = serialize_iterator()
+    # s_iter = serialize_iterator()
     v_iter = vectorized_iterator()
+    import IPython
+    ns = locals().copy()
+    ns.update(globals())
+    IPython.embed(user_ns=ns)
+    exit()
     # PREPROCESS ITERATOR TEST 
-    i = 0
-    while True:
-        batch2 = next(v_iter)
-        batch1_x = []
-        batch1_pl = []
-        for _ in range(batch2.tokens.shape[0]):
-            sample = next(s_iter)
-            batch1_x.append(torch.tensor(sample.tokens))
-            batch1_pl.append(torch.tensor(sample.patch_lengths))
+    # i = 0
+    # while True:
+    #     batch2 = next(v_iter)
+    #     batch1_x = []
+    #     batch1_pl = []
+    #     for _ in range(batch2.tokens.shape[0]):
+    #         sample = next(s_iter)
+    #         batch1_x.append(torch.tensor(sample.tokens))
+    #         batch1_pl.append(torch.tensor(sample.patch_lengths))
         
-        tok_lengths = batch2.patch_lengths.sum(dim=1)
-        assert all(batch1_x[i].eq(batch2.tokens[i, :tok_lengths[i]]).all().item() for i in range(batch2.tokens.shape[0]))
-        import IPython
-        ns = locals().copy()
-        ns.update(globals())
-        IPython.embed(user_ns=ns)
-        exit()
-        # assert all(batch1_pl[pl1].eq(batch2.patch_lengths[pl1, :batch1_pl[pl1].shape[0]]).all().item() for pl1 in range(len(batch1_pl)))
+    #     tok_lengths = batch2.patch_lengths.sum(dim=1)
+    #     assert all(batch1_x[i].eq(batch2.tokens[i, :tok_lengths[i]]).all().item() for i in range(batch2.tokens.shape[0]))
+    #     assert all(batch1_pl[pl1].eq(batch2.patch_lengths[pl1, :batch1_pl[pl1].shape[0]]).all().item() for pl1 in range(len(batch1_pl)))
 
-        i += 1
-        print(i)
+    #     i += 1
+    #     print(i)
 
     # SEQUENCE ITERATOR TEST
-    # batch2 = next(v_iter)
-    # batch1_x = []
-    # batch1_pl = []
-    # for _ in range(64):
-    #     sample = next(s_iter)
-    #     batch1_x.extend(torch.tensor(sample.tokens))
-    #     batch1_pl.extend(torch.tensor(sample.patch_lengths))
+    # while True:
+    #     try:
+    #         batch2 = next(v_iter)
+    #     except StopIteration:
+    #         break
+    #     batch1_x = []
+    #     batch1_pl = []
+    #     for _ in range(64):
+    #         sample = next(s_iter)
+    #         batch1_x.extend(torch.tensor(sample.tokens))
+    #         batch1_pl.extend(torch.tensor(sample.patch_lengths))
 
-    # batch1_x = torch.stack(batch1_x)
-    # batch1_pl = torch.stack(batch1_pl)
+    #     batch1_x = torch.stack(batch1_x)
+    #     batch1_pl = torch.stack(batch1_pl)
+    #     assert batch2.patch_lengths.eq(batch1_pl).all()
+    #     assert batch2.tokens.eq(batch1_x).all()
 
 
     # PACKING ITERATOR TEST
-    # batch1 = next(s_iter)
-    # batch2 = next(v_iter)
     
 
     # i = 1
-    # while (batch1 is not None) and (batch2 is not None):
-    #     if not torch.from_numpy(batch1.x).eq(batch2.x).all():
-    #         import IPython
-    #         ns = locals().copy()
-    #         ns.update(globals())
-    #         IPython.embed(user_ns=ns)
-    #         exit()
-    #     batch1 = next(s_iter)
+    # while True:
+    #     try:
+    #         batch1 = next(s_iter)
+    #     except StopIteration:
+    #         break
     #     batch2 = next(v_iter)
+    #     assert torch.from_numpy(batch1.x).eq(batch2.x).all()
+    #     assert torch.from_numpy(batch1.patch_lengths).eq(batch2.patch_lengths).all()
     #     i += 1
-
-    
-    # assert (batch1 is None) and (batch2 is None)
