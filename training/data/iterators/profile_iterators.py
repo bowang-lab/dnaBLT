@@ -36,7 +36,7 @@ def get_batch():
 def serialize_iterator():
     file_format = args.file_format
     dataset_path = args.root_dir
-    entropy_files = "entropies_validation0_rndmized.arrow"
+    entropy_files = "entropies_validation0_repeated.arrow"
     preprocess_dir = args.preprocess_dir
     entropy_model_name = args.entropy_model_name
     arrow_batch_size = args.arrow_batch_size
@@ -97,7 +97,7 @@ def serialize_iterator():
 def vectorized_iterator():
     file_format = args.file_format
     dataset_path = args.root_dir
-    entropy_files = "entropies_validation0_rndmized.arrow"
+    entropy_files = "entropies_validation0_repeated.arrow"
     preprocess_dir = args.preprocess_dir
     entropy_model_name = args.entropy_model_name
     arrow_batch_size = args.arrow_batch_size
@@ -155,13 +155,18 @@ def vectorized_iterator():
     return iter(packing_iterator)
 
 if __name__ == "__main__":
-    # s_iter = serialize_iterator()
+    s_iter = serialize_iterator()
     v_iter = vectorized_iterator()
-    import IPython
-    ns = locals().copy()
-    ns.update(globals())
-    IPython.embed(user_ns=ns)
-    exit()
+    begin_time = time.time()
+    for b in s_iter:
+        pass
+    end_time = time.time()
+    print("Serial", end_time - begin_time)
+    begin_time = time.time()
+    for b in v_iter:
+        pass
+    end_time = time.time()
+    print("Vectorized", end_time - begin_time)
     # PREPROCESS ITERATOR TEST 
     # i = 0
     # while True:
