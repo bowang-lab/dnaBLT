@@ -1,30 +1,25 @@
-import os
-import math
 import random
 import gc
-from dataclasses import asdict
-from typing import Any, Optional, Union, List, Dict
-from bytelatent.data.ngram_processor import NgramProcessor, parse_ngram_to_size
+from typing import Any, Union, Dict
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.optim import lr_scheduler
+import torch.distributed as dist
+from torch.utils.data import IterableDataset, get_worker_info, DataLoader
 
-import wandb
 from pytorch_lightning.loggers import WandbLogger
 
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback
 
-from args import TrainArgs
 import torch._dynamo
 torch._dynamo.config.suppress_errors = True
 
-from arrow_iterator import ArrowFileIterator
 
 from bytelatent.model.blt import ByteLatentTransformer
 # make sure to import the BLT here
 from optim import build_optimizer
+from v_args import DataloaderArgs, TrainArgs
 
 class DummyModel(torch.nn.Module):
     def __init__(self, input_dim: int = 128, output_dim: int = 128):
@@ -81,6 +76,67 @@ def compute_loss(predictions, targets, mask, scale):
 # Lightning Module
 ###############################################
 
+class PackedBatchDataset(IterableDataset):
+    """
+    IterableDataset that simply *delegates* to the existing iterator
+    chain (Arrow → Preprocess → Sequence → Packing).
+
+    Each element yielded is already a fully-formed `Batch` coming from
+    `PackingIterator`, so no extra collation is required.
+    """
+
+    def __init__(self, dl_args: DataloaderArgs, mode: str = "train"):
+        super().__init__()
+        self.dl_args = dl_args
+        self.mode = mode
+
+    def _make_iterator_for_worker(self):
+        winfo = get_worker_info()                     # None when num_workers = 0
+        local_worker_id = 0 if winfo is None else winfo.id
+        local_num_workers = 1 if winfo is None else winfo.num_workers
+
+        if dist.is_available() and dist.is_initialized():
+            ddp_rank = dist.get_rank()
+            ddp_world_size = dist.get_world_size()
+        else:
+            ddp_rank, ddp_world_size = 0, 1
+
+        # “Global” worker ids that cover *all* DDP ranks × DataLoader workers. Injective function.
+        global_worker_id  = ddp_rank * local_num_workers + local_worker_id
+        global_num_workers = ddp_world_size * local_num_workers
+
+        return self.dl_args.build_from_rank(
+            ddp_rank = ddp_rank,
+            ddp_world_size = ddp_world_size,
+            worker_id = global_worker_id,
+            num_workers = global_num_workers,
+            mode = self.mode,                   # "train" / "validation"
+        )
+    def __iter__(self):
+        return iter(self._make_iterator_for_worker())
+
+def build_dataloader(dl_args: DataloaderArgs,
+                     mode: str = "train",
+                     num_workers: int = 0,
+                     pin_memory: bool = True):
+    """
+    Returns a torch.utils.data.DataLoader whose `dataset` streams the same
+    `Batch` objects you used to obtain from directly looping over
+    `args.build_from_rank(...)`.
+
+    • `batch_size` **must** stay `None` because the dataset already
+      emits *batched* samples.
+    • No `collate_fn` is needed: each iterator element is forwarded
+      unchanged.
+    """
+    dataset = PackedBatchDataset(dl_args, mode)
+    return DataLoader(dataset,
+                      batch_size = None,   # one Batch per iteration
+                      num_workers = num_workers,
+                      pin_memory = pin_memory,
+                      persistent_workers = num_workers > 0)
+
+
 class ByteLatentLightningModule(pl.LightningModule):
     def __init__(self, args: TrainArgs):
         super().__init__()
@@ -136,45 +192,6 @@ class ByteLatentLightningModule(pl.LightningModule):
         mask = batch.mask  # may be None
         ngram_ids = batch.ngram_ids  # may be None
 
-
-        if self.args.model.encoder_enable_byte_ngrams and ngram_ids is None:
-        # Ensure that you have a valid directory for the ngram tables in your args.
-            if not hasattr(self.args.model, "encoder_ngram_table_dir") or self.args.model.encoder_ngram_table_dir is None:
-                raise ValueError("encoder_ngram_table_dir must be provided in the model args if using ngram embeddings.")
-
-        # Parse ngram sizes from your configuration string.
-            ngram_to_size = parse_ngram_to_size(self.args.model.encoder_ngram_to_size_str)
-        # Initialize the NgramProcessor using the table directory and ngram sizes.
-            ngram_processor = NgramProcessor(
-                ngram_table_dir=self.args.model.encoder_ngram_table_dir,
-                ngram_to_size=ngram_to_size
-        )
-        # Convert batch_x to a numpy array.
-            raw_tokens = batch_x.cpu().numpy()
-        # Compute ngram IDs. The output is a list (one per ngram size).
-            ngram_ids_list = ngram_processor.encode_token_ngrams(raw_tokens)
-        # Stack them along a new axis to form a single numpy array.
-            ngram_ids_np = np.stack(ngram_ids_list, axis=0)
-        # Convert to torch tensor and move to the same device as batch_x.
-         
-            ngram_ids = torch.tensor(ngram_ids_np, dtype=torch.int64, device=batch_x.device)
-            self.print(f"Computed ngram_ids with shape: {ngram_ids.shape}")
-
-
-        # if batch_patch_lengths is not None and isinstance(batch_patch_lengths, np.ndarray):
-        #      batch_patch_lengths = torch.tensor(batch_patch_lengths, device=batch_x.device) 
-        # # Update byte count for metrics based on tokenizer type
-        # elif self.args.data.tokenizer_args.name in ["sp", "tiktoken"]:
-        #     for example in batch.y:
-        #         target_tokens = self.tokenizer.decode(example.tolist())
-        #         self.n_bytes += (
-        #             len(target_tokens.encode("utf-8")) +
-        #             (example == self.tokenizer.eos_id).sum().item() +
-        #             (example == self.tokenizer.bos_id).sum().item()
-        #         )
-        # else:
-        #     raise ValueError(f"Unexpected tokenizer: {self.args.data.tokenizer_args.name}")
-        
         # Forward pass and loss computation
         pred = self.forward(batch_x, batch_patch_lengths, ngram_ids)
         loss, tok_loss = compute_loss(pred, batch_y, mask, scale=1.0)
@@ -189,42 +206,9 @@ class ByteLatentLightningModule(pl.LightningModule):
         batch_patch_lengths = batch.patch_lengths  # may be None
         mask = batch.mask  # may be None
         ngram_ids = batch.ngram_ids  # may be None
-        # if batch_patch_lengths is not None and isinstance(batch_patch_lengths, np.ndarray):
-        #      batch_patch_lengths = torch.tensor(batch_patch_lengths, device=batch_x.device)
-        if self.args.model.encoder_enable_byte_ngrams and ngram_ids is None:
-        # Ensure that you have a valid directory for the ngram tables in your args.
-            if not hasattr(self.args.model, "encoder_ngram_table_dir") or self.args.model.encoder_ngram_table_dir is None:
-                raise ValueError("encoder_ngram_table_dir must be provided in the model args if using ngram embeddings.")
-        
-        # Parse ngram sizes from your configuration string.
-            ngram_to_size = parse_ngram_to_size(self.args.model.encoder_ngram_to_size_str)
-        # Initialize the NgramProcessor using the table directory and ngram sizes.
-            ngram_processor = NgramProcessor(
-                ngram_table_dir=self.args.model.encoder_ngram_table_dir,
-                ngram_to_size=ngram_to_size
-            )   
-        # Convert batch_x to a numpy array.
-            raw_tokens = batch_x.cpu().numpy()
-        # Compute ngram IDs. The output is a list (one per ngram size).
-            ngram_ids_list = ngram_processor.encode_token_ngrams(raw_tokens)
-        # Stack them along a new axis to form a single numpy array.
-            ngram_ids_np = np.stack(ngram_ids_list, axis=0)
-        # Convert to torch tensor and move to the same device as batch_x.
-            ngram_ids = torch.tensor(ngram_ids_np, dtype=torch.int64, device=batch_x.device)
-        # Optionally log that you computed ngram_ids.
-            self.print(f"Computed ngram_ids with shape: {ngram_ids.shape}")
-
-
-
 
         predictions = self.forward(batch_x, batch_patch_lengths, ngram_ids)
         loss, _ = compute_loss(predictions, batch_y, mask, scale=1.0)
-
-        # Might want to play around with logging some of this
-        # if mask is None:
-        #     num_tokens = batch_y.numel()
-        # else:
-        #     num_tokens = mask.sum().item()
 
         # Log validation metrics every step. Use prog_bar=True when on Chimera (won't work on UHN)
         self.log("val_entropy_loss", loss, on_step=True, on_epoch=False, prog_bar=False, sync_dist=True)
@@ -252,17 +236,14 @@ class ByteLatentDataModule(pl.LightningDataModule):
         self.test_mode = test_mode
     
     def setup(self, stage=None):
-        rank = self.trainer.global_rank if self.trainer is not None else 0
-        world_size = self.trainer.world_size if self.trainer is not None else 1
-        self.train_data_loader = self.args.data.build_from_rank(rank=rank, world_size=world_size, mode="train")
+        self.train_data_loader = build_dataloader(self.args.data, mode="train", num_workers=4, pin_memory=True) # change on gpu
+        self.val_data_loader = build_dataloader(self.args.data, mode="validation", num_workers=4, pin_memory=True) # change on gpu
     
     def train_dataloader(self):
         return self.train_data_loader
     
     def val_dataloader(self):
-        rank = self.trainer.global_rank if self.trainer is not None else 0
-        world_size = self.trainer.world_size if self.trainer is not None else 1
-        return self.args.data.build_from_rank(rank=rank, world_size=world_size, mode="validation")
+        return self.val_data_loader
     
     def transfer_batch_to_device(self, batch, device, dataloader_idx):
         """
@@ -347,7 +328,7 @@ def train(args: TrainArgs, test_mode = False):
         val_check_interval=args.checkpoint.dump.every,
         logger=wandb_logger,
         enable_progress_bar=False,
-        log_every_n_steps=50
+        log_every_n_steps=50,
     )
     
 

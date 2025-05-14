@@ -138,17 +138,6 @@ class ArrowFileIterator:
             yield from self._process_batch(self.batch_to_consume)
             self.batch_to_consume = None
         
-        # 0.277 seconds. So it's the consumer code that's cooking us.
-        # time_sum = 0
-        # for batch in self.batch_iterator:
-        #     batch_columns = batch.to_pydict()
-        #     start_time = time.time()
-        #     [b for b in self._process_batch(batch_columns)]
-        #     end_time = time.time()
-        #     time_sum += end_time - start_time
-        #     print(f"Time taken: {time_sum}")
-        # exit()
-
         for batch in self.batch_iterator:
             batch_columns = batch.to_pydict()
             yield from self._process_batch(batch_columns)

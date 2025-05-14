@@ -38,16 +38,7 @@ class PreprocessIterator:
         self.add_patches = add_patches
         # self.tokenizer = tokenizer_args.build()
 
-        if self.add_patches:
-            self.patcher = patcher_args.build()
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            if hasattr(self.patcher, 'to'):
-                 self.patcher.to(self.device)
-            # Basic check for entropy mode if entropies are expected
-            # assert self.patcher.patching_mode == PatchingModeEnum.entropy
-        else:
-             self.patcher = None
-             self.device = torch.device("cpu")
+        self.patcher = patcher_args
 
 
     def create_iter(self) -> Generator[Dict[str, Any], Any, None]:
@@ -89,7 +80,6 @@ class PreprocessIterator:
                 patch_lengths=patch_lengths
             )
 
-            # TODO: Make patch packing + batch truncation work with new BltExample object
 
 
     def __iter__(self):

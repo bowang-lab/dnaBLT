@@ -84,8 +84,10 @@ def distribute_data_to_rank(
     preprocess_dir: str,
     entropy_model_name: str | None,
     arrow_batch_size: int,
-    rank: int,
-    world_size: int,
+    ddp_rank: int,
+    ddp_world_size: int,
+    worker_id: int,
+    num_workers: int,
     file_format: str,
     s3_profile: str | None = None,
     file_pattern: str = TRAIN_DATA_FILE_PATTERN,
@@ -102,19 +104,27 @@ def distribute_data_to_rank(
       the empty‑shard error raised inside `ArrowFileIterator`.
     """
     dataset_chunks = find_and_sanitize_chunks(
-        dataset_path, world_size, entropy_files, s3_profile=s3_profile
+        dataset_path, ddp_world_size, entropy_files, s3_profile=s3_profile
     )
 
     # Ensure there are at least as many shards as ranks; replicate if needed.
-    if len(dataset_chunks) < world_size:
-        reps = math.ceil(world_size / len(dataset_chunks))
-        dataset_chunks = (dataset_chunks * reps)[:world_size]
+    # HACK:
+    # files_per_rank = math.ceil(len(dataset_files) / ddp_world)
+    # start = ddp_rank * files_per_rank
+    # end   = start + files_per_rank
+    # selected_files = dataset_files[start:end]
+
+    if len(dataset_chunks) < ddp_world_size:
+        reps = math.ceil(ddp_world_size / len(dataset_chunks))
+        dataset_chunks = (dataset_chunks * reps)[:ddp_world_size]
 
     return ArrowFileIterator(
         file_path=None,
         file_format=file_format,
-        worker_id=rank,          # global DDP rank
-        num_workers=world_size,  # total ranks
+        ddp_rank=ddp_rank,          # global DDP rank
+        ddp_world_size=ddp_world_size,  # global DDP world size
+        worker_id=worker_id,        # local DDP rank
+        num_workers=num_workers,  # total ranks
         preprocess_dir=preprocess_dir,
         dataset_files=dataset_chunks,
         entropy_model_name=entropy_model_name,
@@ -144,8 +154,8 @@ class PackedCausalTransformerGeneratorArgs(BaseModel):
 class DataloaderArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     s3_profile: str | None = None
-    root_dir: str | None = "/Users/arnavshah/Code/dnaBLT/outputs"
-    sources: dict[str, dict[str, float]] = {"train": {"entropies_validation*": 1}, "validation": {"entropies_validation*": 1}}
+    root_dir: str | None = "/home/ashah"
+    sources: dict[str, dict[str, float]] = {"train": {"16b*": 1}, "validation": {"entropies_validation.arrow": 1}}
     batch_size: int = 16
     seq_len: int = 4096
     seed: int = 42
@@ -171,11 +181,11 @@ class DataloaderArgs(BaseModel):
     patcher_args: PatcherArgs = PatcherArgs()
 
     def _create_sequence_iterators(
-        self, rank: int, world_size: int, mode: str = "train"
+        self, ddp_rank: int, ddp_world_size: int, worker_id: int, num_workers: int, mode: str = "train"
     ) -> dict[str, SequenceIterator]:
         source_to_sequence_iterator: dict[str, SequenceIterator] = {}
         for dataset_path in self.sources[mode]:
-            shuffle_rng_state = get_rng_state(self.seed + 1, rank, world_size)
+            shuffle_rng_state = get_rng_state(self.seed + 1, worker_id, num_workers)
             arrow_iterator = distribute_data_to_rank(
                 file_format=self.file_format,
                 dataset_path=self.root_dir,
@@ -183,8 +193,10 @@ class DataloaderArgs(BaseModel):
                 preprocess_dir=self.preprocess_dir,
                 entropy_model_name=self.entropy_model_name,
                 arrow_batch_size=self.arrow_batch_size,
-                rank=rank,
-                world_size=world_size,
+                ddp_rank=ddp_rank,
+                ddp_world_size=ddp_world_size,
+                worker_id=worker_id,
+                num_workers=num_workers,
                 s3_profile=self.s3_profile,
             )
             looping_iterator = arrow_iterator
@@ -204,10 +216,10 @@ class DataloaderArgs(BaseModel):
         return source_to_sequence_iterator
 
     def build_from_rank(
-        self, rank: int, world_size: int, mode: str = "train"
+        self, ddp_rank: int, ddp_world_size: int, worker_id: int, num_workers: int, mode: str = "train"
     ):
-        source_to_sequence_iterators = self._create_sequence_iterators(rank, world_size, mode)
-        weight_rng_state = get_rng_state(self.seed + 1, rank, world_size)
+        source_to_sequence_iterators = self._create_sequence_iterators(ddp_rank, ddp_world_size, worker_id, num_workers, mode)
+        weight_rng_state = get_rng_state(self.seed + 1, worker_id, num_workers)
         sampling_iterator = SamplingIterator(
             rng_state=weight_rng_state,
             source_to_weight=self.sources[mode],

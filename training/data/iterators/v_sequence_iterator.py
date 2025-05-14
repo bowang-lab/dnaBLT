@@ -56,11 +56,9 @@ class SequenceIterator:
         max_seq  = self._max_seq
         toks_buf = self._patch_tokens
         lens_buf = self._patch_lengths
-        device = torch.device("cpu")   # will be updated on the first real example
         for example in self._src_iter.create_iter():
             tk_batch: torch.Tensor = example.tokens                  # [B, T]
             pl_batch: torch.Tensor = example.patch_lengths           # [B, P]
-            device = tk_batch.device
 
             # -------- Vectorised flatten of the whole batch -------- #
             # 1. Optional row‑level permutation for better mixing.
@@ -68,7 +66,6 @@ class SequenceIterator:
                 perm = torch.as_tensor(
                     self.rng.permutation(len(tk_batch)),
                     dtype=torch.long,
-                    device=tk_batch.device,
                 )
                 tk_batch = tk_batch.index_select(0, perm)
                 pl_batch = pl_batch.index_select(0, perm)
@@ -82,7 +79,7 @@ class SequenceIterator:
             # 3. Trim away right‑padding tokens *vectorially*.
             row_token_totals = pl_batch.sum(dim=1)       # total real tokens per row
             T = tk_batch.size(1)
-            arange_t = torch.arange(T, device=device).expand_as(tk_batch)
+            arange_t = torch.arange(T).expand_as(tk_batch)
             keep_mask = arange_t < row_token_totals.unsqueeze(1)
             flat_tokens = tk_batch[keep_mask]            # flattened stream of real tokens
 
@@ -100,7 +97,7 @@ class SequenceIterator:
 
                 yield PackedSequence(
                     tokens=seq_toks,
-                    patch_lengths=torch.tensor(seq_lens, device=device, dtype=torch.long),
+                    patch_lengths=torch.tensor(seq_lens, dtype=torch.long),
                 )
 
                 lens_buf = lens_buf[max_seq:]            # Remove processed items

@@ -9,6 +9,12 @@ from blterror import ByteLatentError
 from bltexample import BltExample
 # from bytelatent.preprocess.preprocess_entropies import get_id_key, get_text
 
+# NOTE:
+#   * `rank` / `world_size` partition **files** across DDP processes.
+#   * `worker_id` / `num_workers` partition **batches** across DataLoader
+#     worker subprocesses *within* a single rank.
+#   This lets us run multiple workers per rank without duplicating data.
+
 logger = getLogger(__name__)
 
 def get_text(doc: dict):
@@ -50,16 +56,16 @@ def shard_sort_key(file: str):
     return int(match.group(1))
 
 
-def _select_shard_files(dataset_files: list[str], worker_id: int, num_workers: int) -> list[str]:
+def _select_shard_file(dataset_files: list[str], index: int, modulo: int) -> list[str]:
     """
-    Deterministically assign a disjoint subset of `dataset_files` to this
-    worker.  The `i`‑th worker takes every `num_workers`‑th file starting
-    from index `i`.  This keeps ordering stable across restarts and
-    guarantees each file is processed by exactly one worker.
+    Deterministically assign a disjoint subset of `dataset_files` to the
+    **rank** identified by `index`, assuming `modulo` total ranks.
     """
-    if num_workers <= 1:
-        return dataset_files
-    return [f for idx, f in enumerate(dataset_files) if idx % num_workers == worker_id]
+    if modulo == 1:
+        return dataset_files[0]
+    for idx, f in enumerate(dataset_files):
+        if idx % modulo == index:
+            return f
 
 
 def maybe_truncate_string(text: str, max_length: int):
@@ -71,6 +77,7 @@ class ArrowFileIterator:
         self,
         *,
         file_path: Optional[str] = None,
+        ddp_rank: int = 0, ddp_world: int = 1,
         worker_id: int = 0,
         num_workers: int = 1,
         preprocess_dir: Optional[str] = None,
@@ -80,6 +87,8 @@ class ArrowFileIterator:
         file_format: str = "arrow",
     ):
         assert 0 <= worker_id < num_workers, (worker_id, num_workers)
+        self.rank = ddp_rank
+        self.world_size = ddp_world
         if file_path is None and dataset_files is None:
             raise ByteLatentError("file_path and dataset_files cannot both be None")
 
@@ -98,8 +107,9 @@ class ArrowFileIterator:
 
         self.dataset_files = self._initialize_dataset_files(file_path, dataset_files, file_format)
 
-        # Pre‑compute the subset of files this worker will handle.
-        self.shard_files = _select_shard_files(self.dataset_files, self.worker_id, self.num_workers)
+        # Split files across ranks (DDP processes), not DataLoader workers
+        self.shard_file = _select_shard_file(self.dataset_files, self.rank, self.world_size)
+        self.reader = pa.ipc.open_file(self.shard_file)
 
     def _initialize_dataset_files(self, file_path, dataset_files, file_format):
         if dataset_files is not None:
@@ -126,12 +136,16 @@ class ArrowFileIterator:
             "arrow_batch_size": self.arrow_batch_size,
             "dataset_files": self.dataset_files,
             "file_format": self.file_format,
+            "rank": self.rank,
+            "world_size": self.world_size,
         }
 
     @classmethod
     def from_state(cls, state):
         iterator = cls(
             file_path=state["file_path"],
+            rank=state.get("rank", 0),
+            world_size=state.get("world_size", 1),
             worker_id=state["worker_id"],
             num_workers=state["num_workers"],
             preprocess_dir=state["preprocess_dir"],
@@ -145,8 +159,6 @@ class ArrowFileIterator:
         return iterator
 
     def create_iter(self) -> Generator[BltExample, Any, None]:
-        if self.dataset is None:
-            self._initialize_dataset()
 
         if self.batch_to_consume is not None:
             yield self.batch_to_consume
@@ -154,23 +166,12 @@ class ArrowFileIterator:
             self.current_row_in_batch = 0
         
 
-        for batch in self.batch_iterator:
-            yield batch
+        # Each DataLoader worker sees only the batches whose index modulo
+        # `num_workers` equals its `worker_id`.
+        for rg in range(self.worker_id, self.reader.num_record_batches, self.num_workers):
+            yield self.reader.get_batch(rg)
 
-    def _initialize_dataset(self):
-        """
-        Lazily create the underlying Arrow dataset *only* from the files
-        assigned to this worker.  This prevents different DDP ranks from
-        reading the same data and eliminates duplicate training samples.
-        """
-        if len(self.shard_files) == 0:
-            raise ByteLatentError(
-                f"Worker {self.worker_id}/{self.num_workers} received no files to "
-                "process.  Ensure the number of workers does not exceed the number "
-                "of dataset shards."
-            )
-        self.dataset = dataset.dataset(self.shard_files, format=self.file_format)
-        self.batch_iterator = self.dataset.to_batches(batch_size=self.arrow_batch_size)
+            # --- Tokenization (
 
     def set_position(self, target_row_num: int):
         # Not implemented consistently prob
