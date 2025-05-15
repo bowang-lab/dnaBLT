@@ -8,6 +8,7 @@ import torch.distributed as dist
 from torch.utils.data import IterableDataset, get_worker_info, DataLoader
 
 from pytorch_lightning.loggers import WandbLogger
+from pytorch_lightning.profilers import AdvancedProfiler
 
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback
@@ -316,6 +317,13 @@ def train(args: TrainArgs, test_mode = False):
         save_on_train_epoch_end=False,
     )
 
+    # AdvancedProfiler will write a human-readable summary to profile.txt after training.
+    # To view: simply open profile.txt after training completes.
+    profiler = AdvancedProfiler(
+        dirpath=".",              # current directory
+        filename="profile.txt"    # human-readable profile output
+    )
+
     trainer = pl.Trainer(
         max_steps=args.steps,
         strategy="ddp",
@@ -329,6 +337,7 @@ def train(args: TrainArgs, test_mode = False):
         logger=wandb_logger,
         enable_progress_bar=False,
         log_every_n_steps=50,
+        profiler=profiler,  # <-- Add this line
     )
     
 

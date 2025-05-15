@@ -122,7 +122,7 @@ def distribute_data_to_rank(
         file_path=None,
         file_format=file_format,
         ddp_rank=ddp_rank,          # global DDP rank
-        ddp_world_size=ddp_world_size,  # global DDP world size
+        ddp_world=ddp_world_size,  # global DDP world size
         worker_id=worker_id,        # local DDP rank
         num_workers=num_workers,  # total ranks
         preprocess_dir=preprocess_dir,
@@ -154,8 +154,8 @@ class PackedCausalTransformerGeneratorArgs(BaseModel):
 class DataloaderArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     s3_profile: str | None = None
-    root_dir: str | None = "/home/ashah"
-    sources: dict[str, dict[str, float]] = {"train": {"16b*": 1}, "validation": {"entropies_validation.arrow": 1}}
+    root_dir: str | None = "/Users/arnavshah/Code/dnaBLT/outputs"
+    sources: dict[str, dict[str, float]] = {"train": {"entropies_validation0*": 1}, "validation": {"entropies_validation.arrow": 1}}
     batch_size: int = 16
     seq_len: int = 4096
     seed: int = 42
@@ -168,7 +168,7 @@ class DataloaderArgs(BaseModel):
     # entropy_model_name: str | None = "transformer_100m"
     entropy_model_name: str | None = None
     arrow_batch_size: int = 16 # can't be larger unless we want to rewrite the entropy tensors.
-    buffer_size: int = 512
+    buffer_size: int = 64
     file_format: str = "arrow"
 
     pad_to_max_length: bool = True
