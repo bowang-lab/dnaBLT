@@ -92,34 +92,38 @@ class PackedBatchDataset(IterableDataset):
         self.mode = mode
 
     def _make_iterator_for_worker(self):
-        winfo = get_worker_info()                     # None when num_workers = 0
+        winfo = get_worker_info()  # None when num_workers = 0
         local_worker_id = 0 if winfo is None else winfo.id
         local_num_workers = 1 if winfo is None else winfo.num_workers
 
-        if dist.is_available() and dist.is_initialized():
-            ddp_rank = dist.get_rank()
-            ddp_world_size = dist.get_world_size()
-        else:
+        if torch.distributed.is_initialized():
+            ddp_rank       = torch.distributed.get_rank()        # 0‥world-1
+            ddp_world_size = torch.distributed.get_world_size()  # world
+        else:                       # single-GPU / CPU debug runs
             ddp_rank, ddp_world_size = 0, 1
 
         # “Global” worker ids that cover *all* DDP ranks × DataLoader workers. Injective function.
-        global_worker_id  = ddp_rank * local_num_workers + local_worker_id
-        global_num_workers = ddp_world_size * local_num_workers
+        # global_worker_id = ddp_rank * local_num_workers + local_worker_id
+        # global_num_workers = ddp_world_size * local_num_workers
 
         return self.dl_args.build_from_rank(
-            ddp_rank = ddp_rank,
-            ddp_world_size = ddp_world_size,
-            worker_id = global_worker_id,
-            num_workers = global_num_workers,
-            mode = self.mode,                   # "train" / "validation"
+            ddp_rank=ddp_rank,
+            ddp_world_size=ddp_world_size,
+            worker_id=local_worker_id,
+            num_workers=local_num_workers,
+            mode=self.mode,  # "train" / "validation"
         )
+
     def __iter__(self):
         return iter(self._make_iterator_for_worker())
 
-def build_dataloader(dl_args: DataloaderArgs,
-                     mode: str = "train",
-                     num_workers: int = 0,
-                     pin_memory: bool = True):
+
+def build_dataloader(
+    dl_args: DataloaderArgs,
+    mode: str = "train",
+    num_workers: int = 0,
+    pin_memory: bool = True,
+):
     """
     Returns a torch.utils.data.DataLoader whose `dataset` streams the same
     `Batch` objects you used to obtain from directly looping over
@@ -131,11 +135,13 @@ def build_dataloader(dl_args: DataloaderArgs,
       unchanged.
     """
     dataset = PackedBatchDataset(dl_args, mode)
-    return DataLoader(dataset,
-                      batch_size = None,   # one Batch per iteration
-                      num_workers = num_workers,
-                      pin_memory = pin_memory,
-                      persistent_workers = num_workers > 0)
+    return DataLoader(
+        dataset,
+        batch_size=None,  # one Batch per iteration
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=num_workers > 0,
+    )
 
 
 class ByteLatentLightningModule(pl.LightningModule):
@@ -237,8 +243,8 @@ class ByteLatentDataModule(pl.LightningDataModule):
         self.test_mode = test_mode
     
     def setup(self, stage=None):
-        self.train_data_loader = build_dataloader(self.args.data, mode="train", num_workers=4, pin_memory=True) # change on gpu
-        self.val_data_loader = build_dataloader(self.args.data, mode="validation", num_workers=4, pin_memory=True) # change on gpu
+        self.train_data_loader = build_dataloader(self.args.data, mode="train", num_workers=0, pin_memory=True) # change on gpu
+        self.val_data_loader = build_dataloader(self.args.data, mode="validation", num_workers=0, pin_memory=True) # change on gpu
     
     def train_dataloader(self):
         return self.train_data_loader

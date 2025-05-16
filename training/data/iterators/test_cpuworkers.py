@@ -41,21 +41,21 @@ class PackedBatchDataset(IterableDataset):
         local_worker_id = 0 if winfo is None else winfo.id
         local_num_workers = 1 if winfo is None else winfo.num_workers
 
-        if dist.is_available() and dist.is_initialized():
-            ddp_rank = dist.get_rank()
-            ddp_world_size = dist.get_world_size()
-        else:
+        if torch.distributed.is_initialized():
+            ddp_rank       = torch.distributed.get_rank()        # 0‥world-1
+            ddp_world_size = torch.distributed.get_world_size()  # world
+        else:                       # single-GPU / CPU debug runs
             ddp_rank, ddp_world_size = 0, 1
 
         # “Global” worker ids that cover *all* DDP ranks × DataLoader workers. Injective function.
-        global_worker_id = ddp_rank * local_num_workers + local_worker_id
-        global_num_workers = ddp_world_size * local_num_workers
+        # global_worker_id = ddp_rank * local_num_workers + local_worker_id
+        # global_num_workers = ddp_world_size * local_num_workers
 
         return self.dl_args.build_from_rank(
             ddp_rank=ddp_rank,
             ddp_world_size=ddp_world_size,
-            worker_id=global_worker_id,
-            num_workers=global_num_workers,
+            worker_id=local_worker_id,
+            num_workers=local_num_workers,
             mode=self.mode,  # "train" / "validation"
         )
 
@@ -130,15 +130,23 @@ def main(num_workers: int):
     )
 
     # Iterate through dataset
-    for _ in iter(loader):
-        pass
+    batches = []
+    for b in iter(loader):
+        batches.append(b)
 
     t1 = time.time()
-    print(f"[RANK {dist.get_rank()}] Total wall time: {t1-t0:.3f} s")
+    print(f"[RANK {dist.get_rank()}] Total wall time: {t1-t0:.3f} s.")
 
     # optional: shut down workers cleanly (nice for CI runs)
-    loader._iterator._shutdown_workers() if hasattr(loader, "_iterator") else None
+    loader._iterator._shutdown_workers() if hasattr(loader, "_iterator") and num_workers else None
     dist.barrier()
+
+    if dist.get_rank() == 0:
+        import IPython
+        ns = locals().copy()
+        ns.update(globals())
+        IPython.embed(user_ns=ns)
+        exit()
     dist.destroy_process_group()
 
 
