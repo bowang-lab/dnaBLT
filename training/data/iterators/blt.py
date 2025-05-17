@@ -140,7 +140,7 @@ class ByteLatentTransformerArgs(BaseTransformerArgs):
 
     # Additional configurations
     multiple_of: int = 256
-    ffn_dim_multiplier: float = 2.5
+    ffn_dim_multiplier: float = 1 # actually corresponds to ffn_dim=3
     dropout: float = 0
     output_size: int = -1
 

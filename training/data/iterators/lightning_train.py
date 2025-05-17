@@ -170,6 +170,13 @@ class ByteLatentLightningModule(pl.LightningModule):
         
         # Initialize model weights
         self.model.init_weights()
+        self._prefetch_stream = torch.cuda.Stream()
+        self._next_batch_gpu = None
+        self._loader_iter = None
+    
+    def on_train_start(self):
+        self._loader_iter = iter(self.trainer.datamodule.train_dataloader())
+        self._warmup_prefetch()
         
     def on_after_backward(self):
         optimizer = self.optimizers()
@@ -191,17 +198,20 @@ class ByteLatentLightningModule(pl.LightningModule):
         else:
             return self.model(x, patch_lengths=patch_lengths, ngram_ids=ngram_ids)
     
-    def training_step(self, batch, batch_idx):
+    def training_step(self, _unused_batch, batch_idx):
         # TODO: Profile code. Data is slow, but is it *that* slow? How much time spent on forward/backward pass, is it as expected?
-        batch_x = batch.x
-        batch_y = batch.y
-        batch_patch_lengths = batch.patch_lengths  # may be None
-        mask = batch.mask  # may be None
-        ngram_ids = batch.ngram_ids  # may be None
+        torch.cuda.current_stream().wait_stream(self._prefetch_stream)
+        batch = self._next_batch_gpu
+        self._warmup_prefetch()
+        # batch_x = batch.x
+        # batch_y = batch.y
+        # batch_patch_lengths = batch.patch_lengths  # may be None
+        # mask = batch.mask  # may be None
+        # ngram_ids = batch.ngram_ids  # may be None
 
         # Forward pass and loss computation
-        pred = self.forward(batch_x, batch_patch_lengths, ngram_ids)
-        loss, tok_loss = compute_loss(pred, batch_y, mask, scale=1.0)
+        pred = self.forward(batch.x, batch.patch_lengths, None)
+        loss, tok_loss = compute_loss(pred, batch.y, batch.mask, scale=1.0)
         self.log("train_entropy_loss", loss, on_step=True, on_epoch=False, prog_bar=False)
         self.log("train_perplexity", torch.exp(loss), on_step=True, on_epoch=False)
         return loss
@@ -220,6 +230,18 @@ class ByteLatentLightningModule(pl.LightningModule):
         # Log validation metrics every step. Use prog_bar=True when on Chimera (won't work on UHN)
         self.log("val_entropy_loss", loss, on_step=True, on_epoch=False, prog_bar=False, sync_dist=True)
         self.log("val_perplexity", torch.exp(loss), on_step=True, on_epoch=False, sync_dist=True)
+    
+    def _warmup_prefetch(self):
+        try:
+            cpu_batch = next(self._loader_iter)
+        except StopIteration:
+            # Reinitialize the iterator if it has been exhausted
+            self._loader_iter = iter(self.trainer.datamodule.train_dataloader())
+            cpu_batch = next(self._loader_iter)
+        
+        with torch.cuda.stream(self._prefetch_stream):
+            # Move the batch to GPU
+            self._next_batch_gpu = self.trainer.datamodule.transfer_batch_to_device(cpu_batch, self.device, 0)
 
     def configure_optimizers(self):
         optimizer, scheduler = build_optimizer(self.model, self.args.optim, self.args.steps)
@@ -261,24 +283,24 @@ class ByteLatentDataModule(pl.LightningDataModule):
         if not torch.is_tensor(batch.x):
             x = torch.tensor(batch.x, device=device)
         else:
-            x = batch.x.to(device)
+            x = batch.x.to(device, non_blocking=True)
         # Move y
         if not torch.is_tensor(batch.y):
             y = torch.tensor(batch.y, device=device)
         else:
-            y = batch.y.to(device)
+            y = batch.y.to(device, non_blocking=True)
         # Move patch_lengths
         patch_lengths = batch.patch_lengths
         if not torch.is_tensor(patch_lengths):
             patch_lengths = torch.tensor(patch_lengths, device=device)
         else:
-            patch_lengths = patch_lengths.to(device)
+            patch_lengths = patch_lengths.to(device, non_blocking=True)
         # Move mask
         mask = batch.mask
         if not torch.is_tensor(mask):
             mask = torch.tensor(mask, device=device)
         else:
-            mask = mask.to(device)
+            mask = mask.to(device, non_blocking=True)
         # Move ngram_ids
         ngram_ids = batch.ngram_ids
         if ngram_ids is not None:
