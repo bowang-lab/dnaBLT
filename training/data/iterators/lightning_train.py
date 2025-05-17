@@ -22,22 +22,6 @@ from bytelatent.model.blt import ByteLatentTransformer
 from optim import build_optimizer
 from v_args import DataloaderArgs, TrainArgs
 
-class DummyModel(torch.nn.Module):
-    def __init__(self, input_dim: int = 128, output_dim: int = 128):
-        super().__init__()
-        self.linear = torch.nn.Linear(input_dim, output_dim)
-    
-    def forward(self, x, patch_lengths=None, ngram_ids=None):
-        # For simplicity, we ignore patch_lengths and ngram_ids.
-        return self.linear(x)
-    
-    def init_weights(self):
-        # Initialize weights (e.g., Xavier initialization)
-        for p in self.parameters():
-            if p.dim() > 1:
-                torch.nn.init.xavier_uniform_(p)
-
-
 ###############################################
 # Helper Functions
 ###############################################
@@ -143,6 +127,42 @@ def build_dataloader(
         persistent_workers=num_workers > 0,
     )
 
+def to_device_async(batch, device):
+    """
+    Override LightningModule to move all batch elements to the correct device.
+    """
+    batch_type = type(batch)
+    # Move x
+    if not torch.is_tensor(batch.x):
+        x = torch.tensor(batch.x, device=device)
+    else:
+        x = batch.x.to(device, non_blocking=True)
+    # Move y
+    if not torch.is_tensor(batch.y):
+        y = torch.tensor(batch.y, device=device)
+    else:
+        y = batch.y.to(device, non_blocking=True)
+    # Move patch_lengths
+    patch_lengths = batch.patch_lengths
+    if not torch.is_tensor(patch_lengths):
+        patch_lengths = torch.tensor(patch_lengths, device=device)
+    else:
+        patch_lengths = patch_lengths.to(device, non_blocking=True)
+    # Move mask
+    mask = batch.mask
+    if not torch.is_tensor(mask):
+        mask = torch.tensor(mask, device=device)
+    else:
+        mask = mask.to(device, non_blocking=True)
+    # Move ngram_ids
+    ngram_ids = batch.ngram_ids
+    if ngram_ids is not None:
+        if not torch.is_tensor(ngram_ids):
+            ngram_ids = torch.tensor(ngram_ids, device=device)
+        else:
+            ngram_ids = ngram_ids.to(device)
+    # Reconstruct batch with all tensors on the correct device
+    return batch_type(x=x, y=y, patch_lengths=patch_lengths, mask=mask, ngram_ids=ngram_ids)
 
 class ByteLatentLightningModule(pl.LightningModule):
     def __init__(self, args: TrainArgs):
@@ -171,13 +191,9 @@ class ByteLatentLightningModule(pl.LightningModule):
         # Initialize model weights
         self.model.init_weights()
         self._prefetch_stream = torch.cuda.Stream()
-        self._next_batch_gpu = None
-        self._loader_iter = None
+        self._next_on_device = None
+        self._first_batch = True
     
-    def on_train_start(self):
-        self._loader_iter = iter(self.trainer.datamodule.train_dataloader())
-        self._warmup_prefetch()
-        
     def on_after_backward(self):
         optimizer = self.optimizers()
         # Get Lightning’s GradScaler if it exists (only in 16‑mixed)
@@ -198,11 +214,17 @@ class ByteLatentLightningModule(pl.LightningModule):
         else:
             return self.model(x, patch_lengths=patch_lengths, ngram_ids=ngram_ids)
     
-    def training_step(self, _unused_batch, batch_idx):
-        # TODO: Profile code. Data is slow, but is it *that* slow? How much time spent on forward/backward pass, is it as expected?
-        torch.cuda.current_stream().wait_stream(self._prefetch_stream)
-        batch = self._next_batch_gpu
-        self._warmup_prefetch()
+    def training_step(self, batch_cpu, batch_idx):
+        if not self._first_batch:
+            torch.cuda.current_stream().wait_stream(self._prefetch_stream)
+            batch = self._next_on_device
+        else:
+            batch = to_device_async(batch_cpu, self.device)
+            self._first_step = False
+
+        with torch.cuda.stream(self._prefetch_stream):
+            self._next_on_device = to_device_async(batch_cpu, self.device)
+
         # batch_x = batch.x
         # batch_y = batch.y
         # batch_patch_lengths = batch.patch_lengths  # may be None
@@ -231,18 +253,6 @@ class ByteLatentLightningModule(pl.LightningModule):
         self.log("val_entropy_loss", loss, on_step=True, on_epoch=False, prog_bar=False, sync_dist=True)
         self.log("val_perplexity", torch.exp(loss), on_step=True, on_epoch=False, sync_dist=True)
     
-    def _warmup_prefetch(self):
-        try:
-            cpu_batch = next(self._loader_iter)
-        except StopIteration:
-            # Reinitialize the iterator if it has been exhausted
-            self._loader_iter = iter(self.trainer.datamodule.train_dataloader())
-            cpu_batch = next(self._loader_iter)
-        
-        with torch.cuda.stream(self._prefetch_stream):
-            # Move the batch to GPU
-            self._next_batch_gpu = self.trainer.datamodule.transfer_batch_to_device(cpu_batch, self.device, 0)
-
     def configure_optimizers(self):
         optimizer, scheduler = build_optimizer(self.model, self.args.optim, self.args.steps)
         return {
@@ -252,6 +262,9 @@ class ByteLatentLightningModule(pl.LightningModule):
                 "interval": "step"
             }
         }
+
+    def transfer_batch_to_device(self, batch, device, dataloader_idx):
+        return batch
 
 
 ###############################################
@@ -410,4 +423,5 @@ if __name__ == "__main__":
 
     """
     train_args = TrainArgs()
+    train_args.steps = 50 # for profiling purposes.
     train(train_args)
