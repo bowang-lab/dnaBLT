@@ -190,7 +190,7 @@ class ByteLatentLightningModule(pl.LightningModule):
         
         # Initialize model weights
         self.model.init_weights()
-        self._prefetch_stream = torch.cuda.Stream()
+        self._prefetch_stream = torch.cuda.Stream(device=torch.cuda.current_device())
         self._next_on_device = None
         self._first_batch = True
     
@@ -215,21 +215,15 @@ class ByteLatentLightningModule(pl.LightningModule):
             return self.model(x, patch_lengths=patch_lengths, ngram_ids=ngram_ids)
     
     def training_step(self, batch_cpu, batch_idx):
-        if not self._first_batch:
+        if self._first_batch:
+            batch = to_device_async(batch_cpu, self.device)
+            self._first_batch = False
+        else:
             torch.cuda.current_stream().wait_stream(self._prefetch_stream)
             batch = self._next_on_device
-        else:
-            batch = to_device_async(batch_cpu, self.device)
-            self._first_step = False
 
         with torch.cuda.stream(self._prefetch_stream):
             self._next_on_device = to_device_async(batch_cpu, self.device)
-
-        # batch_x = batch.x
-        # batch_y = batch.y
-        # batch_patch_lengths = batch.patch_lengths  # may be None
-        # mask = batch.mask  # may be None
-        # ngram_ids = batch.ngram_ids  # may be None
 
         # Forward pass and loss computation
         pred = self.forward(batch.x, batch.patch_lengths, None)
@@ -240,6 +234,7 @@ class ByteLatentLightningModule(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         # FIXME: Validation step did not run in wandb log? Nor did checkpointing?
+        batch = to_device_async(batch, self.device)
         batch_x = batch.x
         batch_y = batch.y
         batch_patch_lengths = batch.patch_lengths  # may be None
@@ -262,9 +257,6 @@ class ByteLatentLightningModule(pl.LightningModule):
                 "interval": "step"
             }
         }
-
-    def transfer_batch_to_device(self, batch, device, dataloader_idx):
-        return batch
 
 
 ###############################################
@@ -291,38 +283,7 @@ class ByteLatentDataModule(pl.LightningDataModule):
         """
         Override LightningModule to move all batch elements to the correct device.
         """
-        batch_type = type(batch)
-        # Move x
-        if not torch.is_tensor(batch.x):
-            x = torch.tensor(batch.x, device=device)
-        else:
-            x = batch.x.to(device, non_blocking=True)
-        # Move y
-        if not torch.is_tensor(batch.y):
-            y = torch.tensor(batch.y, device=device)
-        else:
-            y = batch.y.to(device, non_blocking=True)
-        # Move patch_lengths
-        patch_lengths = batch.patch_lengths
-        if not torch.is_tensor(patch_lengths):
-            patch_lengths = torch.tensor(patch_lengths, device=device)
-        else:
-            patch_lengths = patch_lengths.to(device, non_blocking=True)
-        # Move mask
-        mask = batch.mask
-        if not torch.is_tensor(mask):
-            mask = torch.tensor(mask, device=device)
-        else:
-            mask = mask.to(device, non_blocking=True)
-        # Move ngram_ids
-        ngram_ids = batch.ngram_ids
-        if ngram_ids is not None:
-            if not torch.is_tensor(ngram_ids):
-                ngram_ids = torch.tensor(ngram_ids, device=device)
-            else:
-                ngram_ids = ngram_ids.to(device)
-        # Reconstruct batch with all tensors on the correct device
-        return batch_type(x=x, y=y, patch_lengths=patch_lengths, mask=mask, ngram_ids=ngram_ids)
+        return batch
 
 
 ###############################################

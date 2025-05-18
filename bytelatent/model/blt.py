@@ -309,18 +309,9 @@ def get_blt_input(
 
 
 def patch_ids_from_lengths(patch_lengths, seq_len):
-    bs, num_patches = patch_lengths.shape
-    # Create a tensor of cumulative sums of the patch lengths
-    cum_d = torch.cat(
-        [
-            torch.zeros(bs, 1, dtype=patch_lengths.dtype, device=patch_lengths.device),
-            patch_lengths.cumsum(dim=-1),
-        ],
-        dim=-1,
-    )
-    patch_ids = (cum_d.unsqueeze(-1) <= torch.arange(seq_len, device=cum_d.device)).sum(
-        dim=-2
-    ) - 1
+    cum_lengths = patch_lengths.cumsum(dim=-1)
+    token_positions = torch.arange(seq_len, device=cum_lengths.device).unsqueeze(0).expand(cum_lengths.size(0), -1)
+    patch_ids = torch.searchsorted(cum_lengths, token_positions, right=False)
     assert not (
         torch.max(patch_ids) > patch_lengths.shape[-1] or torch.min(patch_ids) < 0
     ), f"{torch.max(patch_ids)} > {patch_lengths.shape[-1]} or {torch.min(patch_ids)} < 0"
