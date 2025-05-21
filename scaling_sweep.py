@@ -259,7 +259,7 @@ class ExperimentGeneration:
                             global_params = total_parameters(
                                 gl,
                                 gh * 64,
-                                transformer=False,
+                                transformer=True,
                                 feed_forward_multiplier=feed_forward_mult,
                             )
 
@@ -322,7 +322,7 @@ class ExperimentGeneration:
         # 64 * head = model_dim (stripedhyena)
 
         values = self.run_scaling_experiments(
-            [1.5, 2, 4], decoder_layers, n_heads_e, global_layers, n_heads_g, 2.67
+            [2, 4], decoder_layers, n_heads_e, global_layers, n_heads_g, 2.67
         )
         columns = [
             "FLOPs",
@@ -344,40 +344,5 @@ if __name__ == "__main__":
     blt_flops_calculator = BLTFLOPsCalculator(
         transformer_flops, transformer_flops, transformer_flops
     )
-    # experiment_generation = ExperimentGeneration(blt_flops_calculator)
-    # experiment_generation.run_default_experiment()
-    print(blt_flops_calculator.total_flops(
-        tokens=18_000_000_000,
-        seq_len=8192,
-        patch_size=2,
-        hidden_state_g=512,
-        layers_g=9,
-        hidden_state_e=256,
-        layers_e=1,
-        window_e=512,
-        hidden_state_d=256,
-        layers_d=5,
-        window_d=512,
-        ratio_patchdim2bytedim=2,
-        vocab=4,
-        feed_forward_mult=2.5,
-    ))
-    # print(blt_flops_calculator.total_flops(
-    #     tokens=12_400_000_000,
-    #     seq_len=8192,
-    #     patch_size=1,
-    #     hidden_state_g=448,
-    #     layers_g=7,
-    #     hidden_state_e=192,
-    #     layers_e=1,
-    #     window_e=512,
-    #     hidden_state_d=192,
-    #     layers_d=5,
-    #     window_d=512,
-    #     ratio_patchdim2bytedim=2,
-    #     vocab=4,
-    #     feed_forward_mult=2.5,
-    # ))
-
-    # print(total_parameters(7, 448, True, 2.5))
-    # print(total_parameters(5, 192, True, 2.5))
+    experiment_generation = ExperimentGeneration(blt_flops_calculator)
+    experiment_generation.run_default_experiment()

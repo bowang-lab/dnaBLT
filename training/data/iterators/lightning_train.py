@@ -324,7 +324,7 @@ def train(args: TrainArgs, test_mode = False):
         max_steps=args.steps,
         strategy="ddp",
         accelerator="auto",
-        devices=1,
+        devices=2,
         callbacks=checkpoint_callback,
         gradient_clip_val=None, # must be none for fused adam
         accumulate_grad_batches=args.grad_acc_steps,
@@ -348,7 +348,6 @@ if __name__ == "__main__":
     parser.add_argument("--grad_accum_size", type=int, default=8, help="Gradient accumulation size.")
     parser.add_argument("--patch_size", type=int, default=2, choices=[2, 4], help="Patch size.")
     parser.add_argument("--lr", type=float, default=8e-4, help="Learning rate.")
-    parser.add_argument("--wd", type=float, default=0.1, help="Weight decay.")
     parser.add_argument("--dim_global", type=int, default=512, help="Global transformer dimension")
     parser.add_argument("--dim_local", type=int, default=256, help="Local transformers dimension")
     parser.add_argument("--global_layers", type=int, default=9, help="Global transformer layers.")
