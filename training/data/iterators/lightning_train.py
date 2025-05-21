@@ -361,10 +361,10 @@ if __name__ == "__main__":
 
     if args.patch_size == 2:
         threshold = 1.1
-        max_patch_length = 242
+        max_patch_length = 250
     elif args.patch_size == 4:
-        threshold = 1.26
-        max_patch_length = 849
+        threshold = 1.268
+        max_patch_length = 952
     else:
         raise ValueError(f"Invalid patch size: {args.patch_size}. Must be 2 or 4.")
 
