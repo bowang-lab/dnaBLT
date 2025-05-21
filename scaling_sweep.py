@@ -179,8 +179,8 @@ class BLTFLOPsCalculator:
             layers_d,
             window_d,
             ratio_patchdim2bytedim,
-            vocab,
             feed_forward_mult,
+            vocab
         )
         return 3 * tokens * forward_flops
 
@@ -344,5 +344,6 @@ if __name__ == "__main__":
     blt_flops_calculator = BLTFLOPsCalculator(
         transformer_flops, transformer_flops, transformer_flops
     )
-    experiment_generation = ExperimentGeneration(blt_flops_calculator)
-    experiment_generation.run_default_experiment()
+    print(blt_flops_calculator.total_flops(1.7119e10, 8192, 2, 576, 10, 320, 1, 512, 320, 3, 512, 2, 4, 2.67))
+    # experiment_generation = ExperimentGeneration(blt_flops_calculator)
+    # experiment_generation.run_default_experiment()
