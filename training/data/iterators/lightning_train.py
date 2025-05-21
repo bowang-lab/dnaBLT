@@ -8,7 +8,6 @@ import torch.distributed as dist
 from torch.utils.data import IterableDataset, get_worker_info, DataLoader
 
 from pytorch_lightning.loggers import WandbLogger
-from pytorch_lightning.profilers import AdvancedProfiler
 
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback
@@ -20,7 +19,9 @@ torch._dynamo.config.suppress_errors = True
 from bytelatent.model.blt import ByteLatentTransformer
 # make sure to import the BLT here
 from optim import build_optimizer
-from v_args import DataloaderArgs, TrainArgs
+from v_args import DataloaderArgs, TrainArgs, OptimArgs
+from patching import PatcherArgs
+from blt import ByteLatentTransformerArgs
 
 ###############################################
 # Helper Functions
@@ -319,13 +320,6 @@ def train(args: TrainArgs, test_mode = False):
         save_on_train_epoch_end=False,
     )
 
-    # AdvancedProfiler will write a human-readable summary to profile.txt after training.
-    # To view: simply open profile.txt after training completes.
-    profiler = AdvancedProfiler(
-        dirpath=".",              # current directory
-        filename="profile.txt"    # human-readable profile output
-    )
-
     trainer = pl.Trainer(
         max_steps=args.steps,
         strategy="ddp",
@@ -339,7 +333,6 @@ def train(args: TrainArgs, test_mode = False):
         logger=wandb_logger,
         enable_progress_bar=False,
         log_every_n_steps=50,
-        profiler=profiler,  # <-- Add this line
     )
     
 
@@ -348,41 +341,61 @@ def train(args: TrainArgs, test_mode = False):
     gc.collect()
 
 if __name__ == "__main__":
-    """
+    import argparse
+    parser = argparse.ArgumentParser(description="Train a ByteLatent model.")
+    parser.add_argument("--tokens", type=int, default=18_000_000_000, help="Number of tokens to train on.")
+    parser.add_argument("--batch_size", type=int, default=16, help="Batch size.")
+    parser.add_argument("--grad_accum_size", type=int, default=8, help="Gradient accumulation size.")
+    parser.add_argument("--patch_size", type=int, default=2, choices=[2, 4], help="Patch size.")
+    parser.add_argument("--lr", type=float, default=8e-4, help="Learning rate.")
+    parser.add_argument("--wd", type=float, default=0.1, help="Weight decay.")
+    parser.add_argument("--dim_global", type=int, default=512, help="Global transformer dimension")
+    parser.add_argument("--dim_local", type=int, default=256, help="Local transformers dimension")
+    parser.add_argument("--global_layers", type=int, default=9, help="Global transformer layers.")
+    parser.add_argument("--decoder_layers", type=int, default=5, help="Decoder transformer layers.")
+    parser.add_argument("--global_heads", type=int, default=8, help="Number of heads in the global transformer.")
+    parser.add_argument("--local_heads", type=int, default=4, help="Number of heads in local encoder, decoder, and cross-attention.")
+    args = parser.parse_args()
 
-        tokens=18_000_000_000,
-        seq_len=8192,
-        patch_size=2,
-        hidden_state_g=512,
-        layers_g=9,
-        hidden_state_e=256,
-        layers_e=1,
-        window_e=512,
-        hidden_state_d=256,
-        layers_d=5,
-        window_d=512,
-        ratio_patchdim2bytedim=2,
-        vocab=4,
-        feed_forward_mult=2.5,
-    
-    vs.
+    steps = int(args.tokens) // (args.batch_size * args.grad_accum_size * 8192) # guard against tokens float
+    seq_len = 8192 // args.patch_size
 
-        tokens=12_400_000_000,
-        seq_len=8192,
-        patch_size=1,
-        hidden_state_g=448,
-        layers_g=7,
-        hidden_state_e=192,
-        layers_e=1,
-        window_e=512,
-        hidden_state_d=192,
-        layers_d=5,
-        window_d=512,
-        ratio_patchdim2bytedim=2,
-        vocab=4,
-        feed_forward_mult=2.5,
+    if args.patch_size == 2:
+        threshold = 1.1
+        max_patch_length = 242
+    elif args.patch_size == 4:
+        threshold = 1.26
+        max_patch_length = 849
+    else:
+        raise ValueError(f"Invalid patch size: {args.patch_size}. Must be 2 or 4.")
 
-    """
-    train_args = TrainArgs()
-    train_args.steps = 50 # for profiling purposes.
+    train_args = TrainArgs(
+        grad_acc_steps=args.grad_accum_size,
+        steps=steps,
+        max_steps=steps,
+        data = DataloaderArgs(
+            batch_size=args.batch_size,
+            patcher_args = PatcherArgs(
+                threshold = threshold,
+                max_patch_length = max_patch_length,
+            ),
+            seq_len=seq_len,
+        ),
+        optim = OptimArgs(
+            lr=args.lr,
+            warmup=steps // 100,
+        ),
+        model = ByteLatentTransformerArgs(
+            dim_global=args.dim_global,
+            dim_local_decoder=args.dim_local,
+            dim_local_encoder=args.dim_local,
+            n_layers_global=args.global_layers,
+            n_layers_local_decoder=args.decoder_layers,
+            n_heads_global=args.global_heads,
+            n_heads_local_decoder=args.local_heads,
+            n_heads_local_encoder=args.local_heads,
+            cross_attn_nheads=args.local_heads,
+            max_seqlen=seq_len,
+        )
+    )
     train(train_args)

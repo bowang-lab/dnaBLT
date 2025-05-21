@@ -167,8 +167,8 @@ class DataloaderArgs(BaseModel):
     dataset_files: list[str] | None = None
     # entropy_model_name: str | None = "transformer_100m"
     entropy_model_name: str | None = None
-    arrow_batch_size: int = 16 # can't be larger unless we want to rewrite the entropy tensors.
-    buffer_size: int = 64
+    arrow_batch_size: int = 128 # can't be larger unless we want to rewrite the entropy tensors.
+    buffer_size: int = 512
     file_format: str = "arrow"
 
     pad_to_max_length: bool = True

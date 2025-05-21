@@ -219,18 +219,18 @@ class ExperimentGeneration:
         """
 
         flop_budget_map = {
-            "s": 8e18,
-            # "m": 2e19,
-            # "l": 4e19,
-            # "xl": 8e19,
+            "s": 4e18,
+            "m": 8e18,
+            "l": 2e19,
+            "xl": 4e19,
         }
 
         parameter_ranges = {
             # taken from Evo isoflop parabolas for StripedHyena
-            "s": (2e7, 1.2e8),
-            "m": (4e7, 2e8),
-            "l": (4e7, 5e8),
-            "xl": (4e7, 1e9),
+            "s": (0.8e7, 3.5e7),
+            "m": (0.8e7, 3.5e7),
+            "l": (1.5e7, 6.5e7),
+            "xl": (2.5e7, 9.5e7),
         }
 
         values = []
@@ -280,7 +280,7 @@ class ExperimentGeneration:
                             if (decoder_params < global_params * 0.08) or (decoder_params > global_params * 0.12):
                                 continue
 
-                            if dl < (gl * 0.2):
+                            if dl < (gl * 0.2) or ((dl - 1) * 3) > gl:
                                 continue
 
                             # Calculate tokens for each FLOP budget
@@ -315,7 +315,7 @@ class ExperimentGeneration:
     def run_default_experiment(self):
         """Run a default experiment with predefined parameters"""
         global_layers = list(range(4, 24 + 1))
-        decoder_layers = list(map(lambda x: x // 3.5, global_layers))
+        decoder_layers = list(range(2, 12 + 1))
         n_heads_g = list(range(2, 20 + 1))
         n_heads_e = list(range(2, 20 + 1))
 
@@ -337,29 +337,31 @@ class ExperimentGeneration:
             "Decoder layers",
         ]
         df = pd.DataFrame.from_records(values, columns=columns).drop_duplicates()
-        df.to_csv("Compute_allocations2.csv", index=False)
+        df.to_csv("Compute_allocations_transformer.csv", index=False)
 
 
 if __name__ == "__main__":
     blt_flops_calculator = BLTFLOPsCalculator(
         transformer_flops, transformer_flops, transformer_flops
     )
-    # print(blt_flops_calculator.total_flops(
-    #     tokens=18_000_000_000,
-    #     seq_len=8192,
-    #     patch_size=2,
-    #     hidden_state_g=512,
-    #     layers_g=9,
-    #     hidden_state_e=256,
-    #     layers_e=1,
-    #     window_e=512,
-    #     hidden_state_d=256,
-    #     layers_d=5,
-    #     window_d=512,
-    #     ratio_patchdim2bytedim=2,
-    #     vocab=4,
-    #     feed_forward_mult=2.5,
-    # ))
+    # experiment_generation = ExperimentGeneration(blt_flops_calculator)
+    # experiment_generation.run_default_experiment()
+    print(blt_flops_calculator.total_flops(
+        tokens=18_000_000_000,
+        seq_len=8192,
+        patch_size=2,
+        hidden_state_g=512,
+        layers_g=9,
+        hidden_state_e=256,
+        layers_e=1,
+        window_e=512,
+        hidden_state_d=256,
+        layers_d=5,
+        window_d=512,
+        ratio_patchdim2bytedim=2,
+        vocab=4,
+        feed_forward_mult=2.5,
+    ))
     # print(blt_flops_calculator.total_flops(
     #     tokens=12_400_000_000,
     #     seq_len=8192,
@@ -379,5 +381,3 @@ if __name__ == "__main__":
 
     # print(total_parameters(7, 448, True, 2.5))
     # print(total_parameters(5, 192, True, 2.5))
-    # experiment_generation = ExperimentGeneration(blt_flops_calculator)
-    # experiment_generation.run_default_experiment()
