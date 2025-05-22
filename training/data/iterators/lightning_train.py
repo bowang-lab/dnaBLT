@@ -235,7 +235,6 @@ class ByteLatentLightningModule(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         # FIXME: Validation step did not run in wandb log? Nor did checkpointing?
-        batch = to_device_async(batch, self.device)
         batch_x = batch.x
         batch_y = batch.y
         batch_patch_lengths = batch.patch_lengths  # may be None
@@ -246,8 +245,8 @@ class ByteLatentLightningModule(pl.LightningModule):
         loss, _ = compute_loss(predictions, batch_y, mask, scale=1.0)
 
         # Log validation metrics every step. Use prog_bar=True when on Chimera (won't work on UHN)
-        self.log("val_entropy_loss", loss, on_step=True, on_epoch=False, prog_bar=False, sync_dist=True)
-        self.log("val_perplexity", torch.exp(loss), on_step=True, on_epoch=False, sync_dist=True)
+        self.log("val_entropy_loss", loss, on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
+        self.log("val_perplexity", torch.exp(loss), on_step=False, on_epoch=True, sync_dist=True)
     
     def configure_optimizers(self):
         optimizer, scheduler = build_optimizer(self.model, self.args.optim, self.args.steps)
@@ -316,8 +315,7 @@ def train(args: TrainArgs, test_mode = False):
         monitor="val_entropy_loss",
         mode="min",
         save_top_k=1,
-        every_n_train_steps=args.checkpoint.dump.every,
-        save_on_train_epoch_end=False,
+        save_on_train_epoch_end=False
     )
 
     trainer = pl.Trainer(
@@ -329,7 +327,6 @@ def train(args: TrainArgs, test_mode = False):
         gradient_clip_val=None, # must be none for fused adam
         accumulate_grad_batches=args.grad_acc_steps,
         precision="bf16-mixed",
-        val_check_interval=args.checkpoint.dump.every,
         logger=wandb_logger,
         enable_progress_bar=False,
         log_every_n_steps=50,
