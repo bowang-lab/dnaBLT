@@ -293,8 +293,8 @@ class ByteLatentDataModule(pl.LightningDataModule):
 
 def train(args: TrainArgs, test_mode = False):
 
-
     torch.manual_seed(args.seed)
+    torch.set_float32_matmul_precision("medium")
     np.random.seed(args.seed)
     random.seed(args.seed)
 
@@ -323,7 +323,7 @@ def train(args: TrainArgs, test_mode = False):
         max_steps=args.steps,
         strategy="ddp",
         accelerator="auto",
-        devices=2,
+        devices=4, #args.num_gpus,
         callbacks=checkpoint_callback,
         gradient_clip_val=None, # must be none for fused adam
         accumulate_grad_batches=args.grad_acc_steps,
@@ -350,6 +350,7 @@ if __name__ == "__main__":
     parser.add_argument("--dim_local", type=int, default=256, help="Local transformers dimension")
     parser.add_argument("--global_layers", type=int, default=9, help="Global transformer layers.")
     parser.add_argument("--decoder_layers", type=int, default=5, help="Decoder transformer layers.")
+    parser.add_argument("--num_gpus", type=int, default=1, help="Number of GPUs")
     args = parser.parse_args()
 
     steps = int(args.tokens) // (args.batch_size * args.grad_accum_size * 8192) # guard against tokens float
