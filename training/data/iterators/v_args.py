@@ -208,7 +208,7 @@ class DataloaderArgs(BaseModel):
             )
             sequence_iterator = SequenceIterator(
                 preprocess_iterator,
-                max_seq_patches=self.seq_len * self.buffer_size,
+                max_seq_patches=(self.seq_len, self.buffer_size),
                 rng_state=shuffle_rng_state,
             )
 

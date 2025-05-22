@@ -265,7 +265,7 @@ class PackingIterator:
             if num_seqs_in_chunk == 0:
                 continue
 
-            pl_2d_orig = chunk_from_seq_iter.patch_lengths.view(num_seqs_in_chunk, num_patches_m)
+            pl_2d_orig = chunk_from_seq_iter.patch_lengths.view(-1, num_patches_m)
             
             original_p0s = pl_2d_orig[:, 0].clone()
             transformed_pl = pl_2d_orig.clone()

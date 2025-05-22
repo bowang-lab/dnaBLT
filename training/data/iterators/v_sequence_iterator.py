@@ -6,9 +6,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from dataclasses import dataclass
 import numpy as np
 
-MAX_SEQLEN = 4096  # number of *patches* per packed example
-
-
 # --------------------------------------------------------------------------- #
 #                              Output dataclass                               #
 # --------------------------------------------------------------------------- #
@@ -33,11 +30,13 @@ class SequenceIterator:
     def __init__(
         self,
         preprocess_iterator: Iterable,  # Generator[BltExample]
+        max_seq_patches: tuple[int, int],
         rng_state = None,
-        max_seq_patches: int = MAX_SEQLEN,
     ) -> None:
         self._src_iter = preprocess_iterator
-        self._max_seq = int(max_seq_patches)
+        # max_seq_pathches[0] is seq_len, max_seq_pathches[1] is buffer_size
+        self._max_seq = int(max_seq_patches[0] * max_seq_patches[1])
+        self.seqlen = max_seq_patches[0]
 
         # Use plain lists and a cursor index instead of deques
         self._patch_tokens: List[torch.Tensor] = []
@@ -104,21 +103,16 @@ class SequenceIterator:
                 toks_buf = toks_buf[max_seq:]            # Remove processed items
 
         # -------- Final flush so *no tokens are ever dropped* -------- #
-        # remaining = len(lens_buf) - cursor
-        # if remaining > 0:
-        #     # Copy remaining patch‑lengths and right‑pad with zeros to MAX_SEQLEN
-        #     seq_lens = lens_buf[cursor:].copy()
-        #     pad = max_seq - remaining
-        #     if pad:
-        #         seq_lens += [0] * pad
+        remaining = len(lens_buf) // self.seqlen
+        if remaining > 0:
+            # Copy remaining patch‑lengths and right‑pad with zeros to MAX_SEQLEN
+            seq_lens = lens_buf[:remaining * self.seqlen]
+            seq_toks = torch.cat(toks_buf[:remaining * self.seqlen])
 
-        #     # Concatenate remaining token patches (may be empty if only padding)
-        #     seq_toks = torch.cat(toks_buf[cursor:]) if remaining else torch.empty(0, device=device)
-
-        #     yield PackedSequence(
-        #         tokens=seq_toks,
-        #         patch_lengths=torch.tensor(seq_lens, device=device, dtype=torch.long),
-        #     )
+            yield PackedSequence(
+                tokens=seq_toks,
+                patch_lengths=torch.tensor(seq_lens, dtype=torch.long),
+            )
 
     # ------------------------------ Utilities ---------------------------- #
     def __len__(self) -> int:  # optional, not strictly required
