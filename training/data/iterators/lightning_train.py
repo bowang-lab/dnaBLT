@@ -61,7 +61,6 @@ def compute_loss(predictions, targets, mask, scale):
 ###############################################
 # Lightning Module
 ###############################################
-
 class PackedBatchDataset(IterableDataset):
     """
     IterableDataset that simply *delegates* to the existing iterator
@@ -264,11 +263,10 @@ class ByteLatentLightningModule(pl.LightningModule):
 # DataModule and Iterator Wrapper (No IterableDataset)
 ###############################################
 class ByteLatentDataModule(pl.LightningDataModule):
-    def __init__(self, args: TrainArgs, test_mode: bool = False):
+    def __init__(self, args: TrainArgs):
         super().__init__()
         self.args = args
         self.data_loader = None
-        self.test_mode = test_mode
     
     def setup(self, stage=None):
         self.train_data_loader = build_dataloader(self.args.data, mode="train", num_workers=0, pin_memory=True) # change on gpu
@@ -291,7 +289,7 @@ class ByteLatentDataModule(pl.LightningDataModule):
 # Training Function and Main Entrypoint
 ###############################################
 
-def train(args: TrainArgs, test_mode = False):
+def train(args: TrainArgs, num_gpus):
 
     torch.manual_seed(args.seed)
     torch.set_float32_matmul_precision("medium")
@@ -304,7 +302,7 @@ def train(args: TrainArgs, test_mode = False):
     model = ByteLatentLightningModule(args)
     
     # Use test_mode parameter
-    data_module = ByteLatentDataModule(args, test_mode=test_mode)
+    data_module = ByteLatentDataModule(args)
 
     # Set up Weights & Biases logger
     wandb_logger = WandbLogger(project="byte-latent")
@@ -323,7 +321,7 @@ def train(args: TrainArgs, test_mode = False):
         max_steps=args.steps,
         strategy="ddp",
         accelerator="auto",
-        devices=4, #args.num_gpus,
+        devices=num_gpus,
         callbacks=checkpoint_callback,
         gradient_clip_val=None, # must be none for fused adam
         accumulate_grad_batches=args.grad_acc_steps,
@@ -353,7 +351,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_gpus", type=int, default=1, help="Number of GPUs")
     args = parser.parse_args()
 
-    steps = int(args.tokens) // (args.batch_size * args.grad_accum_size * 8192) # guard against tokens float
+    steps = int(args.tokens) // (args.batch_size * args.grad_accum_size * 8192 * args.num_gpus) # guard against tokens float
     seq_len = 8192 // args.patch_size
 
     if args.patch_size == 2:
@@ -394,4 +392,4 @@ if __name__ == "__main__":
             max_seqlen=seq_len,
         )
     )
-    train(train_args)
+    train(train_args, args.num_gpus)
