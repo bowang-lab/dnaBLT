@@ -8,7 +8,7 @@ def total_parameters(
     """Calculate total parameters for a transformer model"""
     if transformer:
         return (
-            4 * hidden_state**2 + 2 * hidden_state**2 * feed_forward_multiplier
+            4 * hidden_state**2 + 3 * hidden_state**2 * feed_forward_multiplier
         ) * layers
     else:
         return (layers // 10) * (
@@ -344,6 +344,6 @@ if __name__ == "__main__":
     blt_flops_calculator = BLTFLOPsCalculator(
         transformer_flops, transformer_flops, transformer_flops
     )
-    print(blt_flops_calculator.total_flops(1.7119e10, 8192, 2, 576, 10, 320, 1, 512, 320, 3, 512, 2, 4, 2.67))
-    # experiment_generation = ExperimentGeneration(blt_flops_calculator)
-    # experiment_generation.run_default_experiment()
+    # print(blt_flops_calculator.total_flops(1.7119e10, 8192, 2, 576, 10, 320, 1, 512, 320, 3, 512, 2, 4, 2.67))
+    experiment_generation = ExperimentGeneration(blt_flops_calculator)
+    experiment_generation.run_default_experiment()

@@ -235,6 +235,7 @@ class ByteLatentLightningModule(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         # FIXME: Validation step did not run in wandb log? Nor did checkpointing?
+        batch = to_device_async(batch, self.device)
         batch_x = batch.x
         batch_y = batch.y
         batch_patch_lengths = batch.patch_lengths  # may be None
