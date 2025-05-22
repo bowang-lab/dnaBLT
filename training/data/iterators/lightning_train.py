@@ -352,8 +352,6 @@ if __name__ == "__main__":
     parser.add_argument("--dim_local", type=int, default=256, help="Local transformers dimension")
     parser.add_argument("--global_layers", type=int, default=9, help="Global transformer layers.")
     parser.add_argument("--decoder_layers", type=int, default=5, help="Decoder transformer layers.")
-    parser.add_argument("--global_heads", type=int, default=8, help="Number of heads in the global transformer.")
-    parser.add_argument("--local_heads", type=int, default=4, help="Number of heads in local encoder, decoder, and cross-attention.")
     args = parser.parse_args()
 
     steps = int(args.tokens) // (args.batch_size * args.grad_accum_size * 8192) # guard against tokens float
@@ -390,10 +388,10 @@ if __name__ == "__main__":
             dim_local_encoder=args.dim_local,
             n_layers_global=args.global_layers,
             n_layers_local_decoder=args.decoder_layers,
-            n_heads_global=args.global_heads,
-            n_heads_local_decoder=args.local_heads,
-            n_heads_local_encoder=args.local_heads,
-            cross_attn_nheads=args.local_heads,
+            n_heads_global=args.dim_global // 64,
+            n_heads_local_decoder=args.dim_local // 64,
+            n_heads_local_encoder=args.dim_local // 64,
+            cross_attn_nheads=args.dim_local // 64,
             max_seqlen=seq_len,
         )
     )
