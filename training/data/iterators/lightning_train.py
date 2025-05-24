@@ -1,6 +1,7 @@
 import random
 import gc
 from typing import Any, Union, Dict
+import os
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -13,10 +14,12 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback
 
 import torch._dynamo
+
 torch._dynamo.config.suppress_errors = True
 
 
 from bytelatent.model.blt import ByteLatentTransformer
+
 # make sure to import the BLT here
 from optim import build_optimizer
 from v_args import DataloaderArgs, TrainArgs, OptimArgs
@@ -26,6 +29,7 @@ from blt import ByteLatentTransformerArgs
 ###############################################
 # Helper Functions
 ###############################################
+
 
 def flatten_dict(d: Dict, parent_key: str = "", sep: str = "_") -> Dict:
     """Flatten a nested dictionary for logging purposes."""
@@ -38,12 +42,14 @@ def flatten_dict(d: Dict, parent_key: str = "", sep: str = "_") -> Dict:
             items.append((new_key, v))
     return dict(items)
 
+
 def to_py_num(num: Union[int, float, torch.Tensor, np.ndarray]) -> Union[int, float]:
     """Convert a tensor or ndarray to a native Python number."""
     if isinstance(num, (torch.Tensor, np.ndarray)):
         return num.item()
     else:
         return num
+
 
 def compute_loss(predictions, targets, mask, scale):
     """Compute cross-entropy loss with optional masking."""
@@ -57,6 +63,7 @@ def compute_loss(predictions, targets, mask, scale):
         tok_loss = tok_loss * mask
         loss = tok_loss.sum() / (mask.sum() + 1e-6)
     return loss, tok_loss
+
 
 ###############################################
 # Lightning Module
@@ -81,9 +88,9 @@ class PackedBatchDataset(IterableDataset):
         local_num_workers = 1 if winfo is None else winfo.num_workers
 
         if torch.distributed.is_initialized():
-            ddp_rank       = torch.distributed.get_rank()        # 0‥world-1
+            ddp_rank = torch.distributed.get_rank()  # 0‥world-1
             ddp_world_size = torch.distributed.get_world_size()  # world
-        else:                       # single-GPU / CPU debug runs
+        else:  # single-GPU / CPU debug runs
             ddp_rank, ddp_world_size = 0, 1
 
         # “Global” worker ids that cover *all* DDP ranks × DataLoader workers. Injective function.
@@ -162,7 +169,10 @@ def to_device_async(batch, device):
         else:
             ngram_ids = ngram_ids.to(device)
     # Reconstruct batch with all tensors on the correct device
-    return batch_type(x=x, y=y, patch_lengths=patch_lengths, mask=mask, ngram_ids=ngram_ids)
+    return batch_type(
+        x=x, y=y, patch_lengths=patch_lengths, mask=mask, ngram_ids=ngram_ids
+    )
+
 
 class ByteLatentLightningModule(pl.LightningModule):
     def __init__(self, args: TrainArgs):
@@ -172,10 +182,10 @@ class ByteLatentLightningModule(pl.LightningModule):
         self.n_bytes = 0
 
         self.save_hyperparameters(args.model_dump())
-        
+
         # Build tokenizer (fallback to SimpleTokenizer if no build() method is provided)
-        self.tokenizer = args.data.tokenizer_args.build() 
-        
+        self.tokenizer = args.data.tokenizer_args.build()
+
         # Initialize model: either an entropy model or the main model.
         # if args.train_entropy_model:
         #     assert args.entropy_model is not None, "Entropy model must be provided."
@@ -183,17 +193,19 @@ class ByteLatentLightningModule(pl.LightningModule):
         #     self.model_args = args.entropy_model
         # else:
         assert args.model is not None, "Model configuration must be provided."
-        self.model = ByteLatentTransformer(args.model)  # Or whatever values make sense for your test
+        self.model = ByteLatentTransformer(
+            args.model
+        )  # Or whatever values make sense for your test
         self.model_args = args.model
 
         ## change this so we call the BLT here and not the dummy model
-        
+
         # Initialize model weights
         self.model.init_weights()
         self._prefetch_stream = torch.cuda.Stream(device=torch.cuda.current_device())
         self._next_on_device = None
         self._first_batch = True
-    
+
     def on_after_backward(self):
         optimizer = self.optimizers()
         # Get Lightning’s GradScaler if it exists (only in 16‑mixed)
@@ -203,17 +215,14 @@ class ByteLatentLightningModule(pl.LightningModule):
             scaler.unscale_(optimizer)
 
         # now clip the (unscaled) gradients of your model
-        torch.nn.utils.clip_grad_norm_(
-            self.parameters(), 
-            max_norm=self.args.optim.clip
-        )
+        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=self.args.optim.clip)
 
     def forward(self, x, patch_lengths=None, ngram_ids=None):
         if self.args.train_entropy_model:
             return self.model(x)
         else:
             return self.model(x, patch_lengths=patch_lengths, ngram_ids=ngram_ids)
-    
+
     def training_step(self, batch_cpu, batch_idx):
         if self._first_batch:
             batch = to_device_async(batch_cpu, self.device)
@@ -228,7 +237,9 @@ class ByteLatentLightningModule(pl.LightningModule):
         # Forward pass and loss computation
         pred = self.forward(batch.x, batch.patch_lengths, None)
         loss, tok_loss = compute_loss(pred, batch.y, batch.mask, scale=1.0)
-        self.log("train_entropy_loss", loss, on_step=True, on_epoch=False, prog_bar=False)
+        self.log(
+            "train_entropy_loss", loss, on_step=True, on_epoch=False, prog_bar=False
+        )
         self.log("train_perplexity", torch.exp(loss), on_step=True, on_epoch=False)
         return loss
 
@@ -245,17 +256,29 @@ class ByteLatentLightningModule(pl.LightningModule):
         loss, _ = compute_loss(predictions, batch_y, mask, scale=1.0)
 
         # Log validation metrics every step. Use prog_bar=True when on Chimera (won't work on UHN)
-        self.log("val_entropy_loss", loss, on_step=False, on_epoch=True, prog_bar=False, sync_dist=True)
-        self.log("val_perplexity", torch.exp(loss), on_step=False, on_epoch=True, sync_dist=True)
-    
+        self.log(
+            "val_entropy_loss",
+            loss,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=False,
+            sync_dist=True,
+        )
+        self.log(
+            "val_perplexity",
+            torch.exp(loss),
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True,
+        )
+
     def configure_optimizers(self):
-        optimizer, scheduler = build_optimizer(self.model, self.args.optim, self.args.steps)
+        optimizer, scheduler = build_optimizer(
+            self.model, self.args.optim, self.args.steps
+        )
         return {
             "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": scheduler,
-                "interval": "step"
-            }
+            "lr_scheduler": {"scheduler": scheduler, "interval": "step"},
         }
 
 
@@ -267,17 +290,21 @@ class ByteLatentDataModule(pl.LightningDataModule):
         super().__init__()
         self.args = args
         self.data_loader = None
-    
+
     def setup(self, stage=None):
-        self.train_data_loader = build_dataloader(self.args.data, mode="train", num_workers=4, pin_memory=True) # change on gpu
-        self.val_data_loader = build_dataloader(self.args.data, mode="validation", num_workers=4, pin_memory=True) # change on gpu
-    
+        self.train_data_loader = build_dataloader(
+            self.args.data, mode="train", num_workers=4, pin_memory=True
+        )  # change on gpu
+        self.val_data_loader = build_dataloader(
+            self.args.data, mode="validation", num_workers=4, pin_memory=True
+        )  # change on gpu
+
     def train_dataloader(self):
         return self.train_data_loader
-    
+
     def val_dataloader(self):
         return self.val_data_loader
-    
+
     def transfer_batch_to_device(self, batch, device, dataloader_idx):
         """
         Override LightningModule to move all batch elements to the correct device.
@@ -289,18 +316,19 @@ class ByteLatentDataModule(pl.LightningDataModule):
 # Training Function and Main Entrypoint
 ###############################################
 
-def train(args: TrainArgs, num_gpus):
 
+def train(args: TrainArgs, num_gpus):
     torch.manual_seed(args.seed)
     torch.set_float32_matmul_precision("medium")
     np.random.seed(args.seed)
     random.seed(args.seed)
 
-    torch._dynamo.config.optimize_ddp = False # we may want to remove flex attention to use optimize_ddp
-    
-    # Initialize the Lightning module and datamodule.
+    torch._dynamo.config.optimize_ddp = (
+        False  # we may want to remove flex attention to use optimize_ddp
+    )
+
     model = ByteLatentLightningModule(args)
-    
+
     # Use test_mode parameter
     data_module = ByteLatentDataModule(args)
 
@@ -308,13 +336,11 @@ def train(args: TrainArgs, num_gpus):
     wandb_logger = WandbLogger(project="byte-latent")
 
     checkpoint_callback = ModelCheckpoint(
-        # dirpath=args.checkpoint.path or os.path.join(args.dump_dir, "checkpoints"),
         filename="{step}-{val_entropy_loss:.2f}",
-        # save_top_k=args.checkpoint.dump.keep if args.checkpoint.dump.keep > 0 else -1,
         monitor="val_entropy_loss",
         mode="min",
         save_top_k=1,
-        save_on_train_epoch_end=False
+        save_on_train_epoch_end=False,
     )
 
     trainer = pl.Trainer(
@@ -323,7 +349,7 @@ def train(args: TrainArgs, num_gpus):
         accelerator="auto",
         devices=num_gpus,
         callbacks=checkpoint_callback,
-        gradient_clip_val=None, # must be none for fused adam
+        gradient_clip_val=None,  # must be none for fused adam
         accumulate_grad_batches=args.grad_acc_steps,
         precision="bf16-mixed",
         logger=wandb_logger,
@@ -331,28 +357,48 @@ def train(args: TrainArgs, num_gpus):
         log_every_n_steps=10,
         val_check_interval=200,
     )
-    
 
     trainer.fit(model, datamodule=data_module)
-    
+
     gc.collect()
+
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(description="Train a ByteLatent model.")
-    parser.add_argument("--tokens", type=int, default=18_000_000_000, help="Number of tokens to train on.")
+    parser.add_argument(
+        "--tokens",
+        type=int,
+        default=18_000_000_000,
+        help="Number of tokens to train on.",
+    )
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size.")
-    parser.add_argument("--grad_accum_size", type=int, default=8, help="Gradient accumulation size.")
-    parser.add_argument("--patch_size", type=int, default=2, choices=[2, 4], help="Patch size.")
+    parser.add_argument(
+        "--grad_accum_size", type=int, default=8, help="Gradient accumulation size."
+    )
+    parser.add_argument(
+        "--patch_size", type=int, default=2, choices=[2, 4], help="Patch size."
+    )
     parser.add_argument("--lr", type=float, default=8e-4, help="Learning rate.")
-    parser.add_argument("--dim_global", type=int, default=512, help="Global transformer dimension")
-    parser.add_argument("--dim_local", type=int, default=256, help="Local transformers dimension")
-    parser.add_argument("--global_layers", type=int, default=9, help="Global transformer layers.")
-    parser.add_argument("--decoder_layers", type=int, default=5, help="Decoder transformer layers.")
+    parser.add_argument(
+        "--dim_global", type=int, default=512, help="Global transformer dimension"
+    )
+    parser.add_argument(
+        "--dim_local", type=int, default=256, help="Local transformers dimension"
+    )
+    parser.add_argument(
+        "--global_layers", type=int, default=9, help="Global transformer layers."
+    )
+    parser.add_argument(
+        "--decoder_layers", type=int, default=5, help="Decoder transformer layers."
+    )
     parser.add_argument("--num_gpus", type=int, default=1, help="Number of GPUs")
     args = parser.parse_args()
 
-    steps = int(args.tokens) // (args.batch_size * args.grad_accum_size * 8192 * args.num_gpus) # guard against tokens float
+    steps = int(args.tokens) // (
+        args.batch_size * args.grad_accum_size * 8192 * args.num_gpus
+    )  # guard against tokens float
     seq_len = 8192 // args.patch_size
 
     if args.patch_size == 2:
@@ -368,19 +414,19 @@ if __name__ == "__main__":
         grad_acc_steps=args.grad_accum_size,
         steps=steps,
         max_steps=steps,
-        data = DataloaderArgs(
+        data=DataloaderArgs(
             batch_size=args.batch_size,
-            patcher_args = PatcherArgs(
-                threshold = threshold,
-                max_patch_length = max_patch_length,
+            patcher_args=PatcherArgs(
+                threshold=threshold,
+                max_patch_length=max_patch_length,
             ),
             seq_len=seq_len,
         ),
-        optim = OptimArgs(
+        optim=OptimArgs(
             lr=args.lr,
-            warmup=steps // 100,
+            warmup=int(steps * 0.05),
         ),
-        model = ByteLatentTransformerArgs(
+        model=ByteLatentTransformerArgs(
             dim_global=args.dim_global,
             dim_local_decoder=args.dim_local,
             dim_local_encoder=args.dim_local,
@@ -391,6 +437,6 @@ if __name__ == "__main__":
             n_heads_local_encoder=args.dim_local // 64,
             cross_attn_nheads=args.dim_local // 64,
             max_seqlen=seq_len,
-        )
+        ),
     )
     train(train_args, args.num_gpus)
