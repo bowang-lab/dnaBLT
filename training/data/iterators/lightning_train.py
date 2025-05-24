@@ -329,7 +329,7 @@ def train(args: TrainArgs, num_gpus):
         logger=wandb_logger,
         enable_progress_bar=False,
         log_every_n_steps=10,
-        val_check_interval=50,
+        val_check_interval=200,
     )
     
 
