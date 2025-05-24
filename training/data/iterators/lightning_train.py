@@ -269,8 +269,8 @@ class ByteLatentDataModule(pl.LightningDataModule):
         self.data_loader = None
     
     def setup(self, stage=None):
-        self.train_data_loader = build_dataloader(self.args.data, mode="train", num_workers=0, pin_memory=True) # change on gpu
-        self.val_data_loader = build_dataloader(self.args.data, mode="validation", num_workers=0, pin_memory=True) # change on gpu
+        self.train_data_loader = build_dataloader(self.args.data, mode="train", num_workers=4, pin_memory=True) # change on gpu
+        self.val_data_loader = build_dataloader(self.args.data, mode="validation", num_workers=4, pin_memory=True) # change on gpu
     
     def train_dataloader(self):
         return self.train_data_loader

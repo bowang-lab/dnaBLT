@@ -154,7 +154,7 @@ class PackedCausalTransformerGeneratorArgs(BaseModel):
 class DataloaderArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     s3_profile: str | None = None
-    root_dir: str | None = "/home/ashah"
+    root_dir: str | None = "/Users/arnavshah/Documents"
     sources: dict[str, dict[str, float]] = {"train": {"16b*": 1}, "validation": {"entropies_validation.arrow": 1}}
     batch_size: int = 16
     seq_len: int = 4096
@@ -168,7 +168,7 @@ class DataloaderArgs(BaseModel):
     # entropy_model_name: str | None = "transformer_100m"
     entropy_model_name: str | None = None
     arrow_batch_size: int = 128 # can't be larger unless we want to rewrite the entropy tensors.
-    buffer_size: int = 512
+    buffer_size: int = 16
     file_format: str = "arrow"
 
     pad_to_max_length: bool = True

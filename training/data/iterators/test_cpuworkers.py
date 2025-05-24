@@ -19,6 +19,8 @@ from torch.utils.data import IterableDataset, get_worker_info, DataLoader
 # ---- import your code -------------------------------------------------
 from v_args import TrainArgs, DataloaderArgs  # or however you load cfg
 import time
+import cProfile
+import pstats
 
 
 # ----------------------------------------------------------------------
@@ -122,31 +124,21 @@ def main(num_workers: int):
     cfg = TrainArgs()
 
     # 3) build the **real DataLoader** with the requested worker count
-    loader = build_dataloader(
+    loader = iter(build_dataloader(
         cfg.data,
         mode="train",
         num_workers=num_workers,
         pin_memory=True,
-    )
+    ))
 
-    # Iterate through dataset
-    batches = []
-    for b in iter(loader):
-        batches.append(b)
+    for _ in range(400):
+        batch = next(loader)
 
     t1 = time.time()
     print(f"[RANK {dist.get_rank()}] Total wall time: {t1-t0:.3f} s.")
 
     # optional: shut down workers cleanly (nice for CI runs)
-    loader._iterator._shutdown_workers() if hasattr(loader, "_iterator") and num_workers else None
     dist.barrier()
-
-    if dist.get_rank() == 0:
-        import IPython
-        ns = locals().copy()
-        ns.update(globals())
-        IPython.embed(user_ns=ns)
-        exit()
     dist.destroy_process_group()
 
 
