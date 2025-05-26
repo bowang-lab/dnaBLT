@@ -340,13 +340,43 @@ class ByteLatentDataModule(pl.LightningDataModule):
 
     # Modern PyTorch Lightning checkpoint hooks
     def state_dict(self):
-        state = {}
+        state_payload = {}
         if self.train_data_loader is not None and hasattr(self.train_data_loader.dataset, 'get_state'):
-            state['train_iterator_state'] = self.train_data_loader.dataset.get_state()
-        return state
+            local_iterator_state = self.train_data_loader.dataset.get_state()
+        else:
+            local_iterator_state = None # Or an empty dict, depending on what get_state might return
 
-    def load_state_dict(self, state_dict):
-        self.train_iterator_state = state_dict.get('train_iterator_state', None)
+        if dist.is_available() and dist.is_initialized():
+            world_size = dist.get_world_size()
+            # Everyone needs to participate in all_gather_object
+            gathered_states = [None] * world_size
+            dist.all_gather_object(gathered_states, local_iterator_state)
+            # The actual content of the checkpoint is typically written by rank 0.
+            # For DataModule state, it's good practice for rank 0 to save all gathered states.
+            # Other ranks will also have `gathered_states` but their return value from state_dict might be ignored by the saver.
+            state_payload['per_rank_train_iterator_states'] = gathered_states
+        else:
+            # Non-DDP mode or DDP not initialized
+            state_payload['per_rank_train_iterator_states'] = [local_iterator_state]
+        
+        return state_payload
+
+    def load_state_dict(self, state_dict_from_ckpt):
+        all_rank_states = state_dict_from_ckpt.get('per_rank_train_iterator_states')
+
+        if all_rank_states:
+            if dist.is_available() and dist.is_initialized():
+                rank = dist.get_rank()
+                if rank < len(all_rank_states):
+                    self.train_iterator_state = all_rank_states[rank]
+                else:
+                    # Current rank is out of bounds for the loaded states (e.g., trained on N GPUs, now running on M > N GPUs)
+                    self.train_iterator_state = None # Start fresh for this rank
+            else:
+                # Non-DDP mode or DDP not initialized
+                self.train_iterator_state = all_rank_states[0]
+        else:
+            self.train_iterator_state = None
 
 
     def train_dataloader(self):
