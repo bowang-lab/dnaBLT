@@ -1,5 +1,6 @@
 import os
 import re
+import random
 from logging import getLogger
 from typing import Generator, Any, Optional
 
@@ -85,6 +86,8 @@ class ArrowFileIterator:
         arrow_batch_size: int = 100,
         dataset_files: Optional[list[str]] = None,
         file_format: str = "arrow",
+        shuffle: bool = True,
+        seed: int = 42,
     ):
         assert 0 <= worker_id < num_workers, (worker_id, num_workers)
         self.rank = ddp_rank
@@ -104,12 +107,23 @@ class ArrowFileIterator:
         self.entropy_model_name = entropy_model_name
         self.arrow_batch_size = arrow_batch_size
         self.file_format = file_format
+        self.shuffle = shuffle
+        self.seed = seed
 
         self.dataset_files = self._initialize_dataset_files(file_path, dataset_files, file_format)
 
         # Split files across ranks (DDP processes), not DataLoader workers
         self.shard_file = _select_shard_file(self.dataset_files, self.rank, self.world_size)
         self.reader = pa.ipc.open_file(self.shard_file)
+        
+        # Initialize RNG for shuffling if needed
+        if self.shuffle:
+            # Create a unique RNG for this worker to ensure deterministic shuffling
+            self.rng = random.Random(self.seed + self.rank * 1000 + self.worker_id)
+            # Pre-compute all batch indices for this worker
+            self.batch_indices = list(range(self.worker_id, self.reader.num_record_batches, self.num_workers))
+            self.rng.shuffle(self.batch_indices)
+            self.current_batch_idx = 0
 
     def _initialize_dataset_files(self, file_path, dataset_files, file_format):
         if dataset_files is not None:
@@ -136,6 +150,8 @@ class ArrowFileIterator:
             "arrow_batch_size": self.arrow_batch_size,
             "dataset_files": self.dataset_files,
             "file_format": self.file_format,
+            "shuffle": self.shuffle,
+            "seed": self.seed,
             "rank": self.rank,
             "world_size": self.world_size,
         }
@@ -153,28 +169,36 @@ class ArrowFileIterator:
             arrow_batch_size=state["arrow_batch_size"],
             dataset_files=state["dataset_files"],
             file_format=state["file_format"],
+            shuffle=state.get("shuffle", False),
+            seed=state.get("seed", 42),
         )
         if state["row_num"] != 0:
             iterator.set_position(state["row_num"])
         return iterator
 
     def create_iter(self) -> Generator[BltExample, Any, None]:
-
         if self.batch_to_consume is not None:
             yield self.batch_to_consume
             self.batch_to_consume = None
             self.current_row_in_batch = 0
         
-
-        # Each DataLoader worker sees only the batches whose index modulo
-        # `num_workers` equals its `worker_id`.
-        for rg in range(self.worker_id, self.reader.num_record_batches, self.num_workers):
-            yield self.reader.get_batch(rg)
+        if self.shuffle:
+            # Use pre-shuffled batch indices for this worker
+            for batch_idx in self.batch_indices[self.current_batch_idx:]:
+                self.current_batch_idx += 1
+                yield self.reader.get_batch(batch_idx)
+        else:
+            # Original behavior: each worker gets every num_workers-th batch
+            for rg in range(self.worker_id, self.reader.num_record_batches, self.num_workers):
+                yield self.reader.get_batch(rg)
 
             # --- Tokenization (
 
     def set_position(self, target_row_num: int):
-        # Not implemented consistently prob
+        # Not implemented for shuffle mode as it would break the shuffle order
+        if self.shuffle:
+            raise NotImplementedError("set_position is not supported when shuffle=True")
+            
         data_str = maybe_truncate_string(str(self.shard_files), 200)
         logger.info(f"Setting arrow position to {target_row_num} for {data_str}")
 
