@@ -39,7 +39,7 @@ class SequenceIterator:
         self.seqlen = max_seq_patches[0]
 
         # Use plain lists and a cursor index instead of deques
-        self._patch_tokens: List[torch.Tensor] = []
+        self._token_buffer: torch.Tensor | None = None
         self._patch_lengths: List[int] = []
 
         if rng_state is None:
@@ -53,7 +53,7 @@ class SequenceIterator:
     # --------------------------------------------------------------------- #
     def create_iter(self) -> Generator[PackedSequence, None, None]:
         max_seq  = self._max_seq
-        toks_buf = self._patch_tokens
+        token_buf = self._token_buffer
         lens_buf = self._patch_lengths
         for example in self._src_iter.create_iter():
             tk_batch: torch.Tensor = example.tokens                  # [B, T]
@@ -84,35 +84,42 @@ class SequenceIterator:
 
             # 4. Split the flattened token stream into individual patches. Each split
             #    is executed in highly‑optimised C++.
-            patches = torch.split(flat_tokens, flat_lengths.tolist())
+            if token_buf is None:
+                token_buf = flat_tokens.clone()
+            else:
+                token_buf = torch.cat((token_buf, flat_tokens), dim=0)
 
-            # 5. Append to running buffers that maintain *patch‑level* alignment.
-            toks_buf.extend(patches)                     # one tensor per patch
-            lens_buf.extend(flat_lengths.tolist())       # matching scalar lengths
-            
+            lens_buf.extend(flat_lengths.tolist())
+
             while len(lens_buf) >= max_seq:
-                seq_lens = lens_buf[:max_seq]            # Python list slice (cheap)
-                seq_toks = torch.cat(toks_buf[:max_seq])  # Concatenate once
+                seq_lens = lens_buf[:max_seq]
+                seq_len_sum = int(sum(seq_lens))
+                seq_toks = token_buf[:seq_len_sum]
 
                 yield PackedSequence(
                     tokens=seq_toks,
                     patch_lengths=torch.tensor(seq_lens, dtype=torch.long),
                 )
 
-                lens_buf = lens_buf[max_seq:]            # Remove processed items
-                toks_buf = toks_buf[max_seq:]            # Remove processed items
+                lens_buf = lens_buf[max_seq:]
+                token_buf = token_buf[seq_len_sum:]
 
         # -------- Final flush so *no tokens are ever dropped* -------- #
         remaining = len(lens_buf) // self.seqlen
         if remaining > 0:
             # Copy remaining patch‑lengths and right‑pad with zeros to MAX_SEQLEN
-            seq_lens = lens_buf[:remaining * self.seqlen]
-            seq_toks = torch.cat(toks_buf[:remaining * self.seqlen])
+            seq_count = remaining * self.seqlen
+            seq_lens = lens_buf[:seq_count]
+            seq_len_sum = int(sum(seq_lens))
+            seq_toks = token_buf[:seq_len_sum]
 
             yield PackedSequence(
                 tokens=seq_toks,
                 patch_lengths=torch.tensor(seq_lens, dtype=torch.long),
             )
+        
+        self._token_buffer = token_buf
+        self._patch_lengths = lens_buf
 
     # ------------------------------ Utilities ---------------------------- #
     def __len__(self) -> int:  # optional, not strictly required

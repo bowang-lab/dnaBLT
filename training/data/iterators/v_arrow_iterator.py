@@ -86,7 +86,7 @@ class ArrowFileIterator:
         arrow_batch_size: int = 100,
         dataset_files: Optional[list[str]] = None,
         file_format: str = "arrow",
-        shuffle: bool = True,
+        shuffle: bool = False,
         seed: int = 42,
     ):
         assert 0 <= worker_id < num_workers, (worker_id, num_workers)
@@ -117,13 +117,13 @@ class ArrowFileIterator:
         self.reader = pa.ipc.open_file(self.shard_file)
         
         # Initialize RNG for shuffling if needed
+        self.current_batch_idx = 0
         if self.shuffle:
             # Create a unique RNG for this worker to ensure deterministic shuffling
             self.rng = random.Random(self.seed + self.rank * 1000 + self.worker_id)
             # Pre-compute all batch indices for this worker
             self.batch_indices = list(range(self.worker_id, self.reader.num_record_batches, self.num_workers))
             self.rng.shuffle(self.batch_indices)
-            self.current_batch_idx = 0
 
     def _initialize_dataset_files(self, file_path, dataset_files, file_format):
         if dataset_files is not None:
@@ -190,6 +190,7 @@ class ArrowFileIterator:
         else:
             # Original behavior: each worker gets every num_workers-th batch
             for rg in range(self.worker_id, self.reader.num_record_batches, self.num_workers):
+                self.current_batch_idx += 1
                 yield self.reader.get_batch(rg)
 
             # --- Tokenization (

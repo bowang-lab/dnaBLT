@@ -7,10 +7,12 @@ import torch
 import torch.nn.functional as F
 import torch.distributed as dist
 from torch.utils.data import IterableDataset, get_worker_info, DataLoader
+from torchdata.stateful_dataloader import StatefulDataLoader
 
 from pytorch_lightning.loggers import WandbLogger
 
 import pytorch_lightning as pl
+
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback
 
 import torch._dynamo
@@ -29,6 +31,28 @@ from blt import ByteLatentTransformerArgs
 ###############################################
 # Helper Functions
 ###############################################
+
+class StatefulDataloaderCheckpoint(pl.Callback):
+    """
+    Gather the StatefulDataLoader.state_dict from each rank and save
+    a dictionary {rank: state_dict} inside the checkpoint.
+    """
+    def on_save_checkpoint(self, trainer, pl_module, checkpoint):
+        # All ranks call this
+        local_state = trainer.datamodule.train_dataloader().state_dict()
+
+        # Gather a list [state_rank0, state_rank1, …]
+        states = trainer.strategy.all_gather(local_state)
+
+        if trainer.global_rank == 0:          # write only once
+            checkpoint["dataloader_state"] = {
+                r: s for r, s in enumerate(states)
+            }
+
+    def on_load_checkpoint(self, trainer, pl_module, checkpoint):
+        rank_state = checkpoint.get("dataloader_state", {}).get(trainer.global_rank)
+        if rank_state is not None:
+            trainer.datamodule._loaded_train_dataloader_state = rank_state
 
 
 def flatten_dict(d: Dict, parent_key: str = "", sep: str = "_") -> Dict:
@@ -77,78 +101,34 @@ class PackedBatchDataset(IterableDataset):
     `PackingIterator`, so no extra collation is required.
     """
 
-    def __init__(self, dl_args: DataloaderArgs, mode: str = "train"):
+    def __init__(self, dl_args: DataloaderArgs, dataset_key: str):
         super().__init__()
         self.dl_args = dl_args
-        self.mode = mode
+        self.dataset_key = dataset_key
         self._iterator = None
-        self._loaded_state_to_apply = None # Stores state loaded from checkpoint until __iter__ applies it
+    
+    def state_dict(self):
+        return {"i": self._iterator.sequence_iterator.source_to_iterator['16b*']._src_iter.arrow_batch_iterator.current_batch_idx}
+
+    def load_state_dict(self, state_dict):
+        self._iterator.sequence_iterator.source_to_iterator['16b*']._src_iter.arrow_batch_iterator.current_batch_idx = state_dict["i"]
 
     def __iter__(self):
-        winfo = get_worker_info()  # None when num_workers = 0
-        local_worker_id = 0 if winfo is None else winfo.id
-        local_num_workers = 1 if winfo is None else winfo.num_workers
-
-        if torch.distributed.is_initialized():
-            ddp_rank = torch.distributed.get_rank()  # 0‥world-1
-            ddp_world_size = torch.distributed.get_world_size()  # world
-        else:  # single-GPU / CPU debug runs
-            ddp_rank, ddp_world_size = 0, 1
-
-        # Create the iterator
-        self._iterator = self.dl_args.build_from_rank(
-            ddp_rank=ddp_rank,
-            ddp_world_size=ddp_world_size,
-            worker_id=local_worker_id,
-            num_workers=local_num_workers,
-            mode=self.mode,  # "train" / "validation"
-        )
+        worker_info = get_worker_info()
+        local_rank = dist.get_rank() if dist.is_initialized() else 0
+        world_size = dist.get_world_size() if dist.is_initialized() else 1
         
-        # Apply loaded state if it exists, after iterator is created
-        if self._loaded_state_to_apply is not None:
-            state_to_apply = self._loaded_state_to_apply
-            self._loaded_state_to_apply = None # Clear it after fetching to prevent re-application
-
-            if 'current_batch_idx' in state_to_apply and state_to_apply['current_batch_idx'] is not None:
-                try:
-                    target_idx = state_to_apply['current_batch_idx']
-                    self._iterator.sequence_iterator.source_to_iterator['16b*']._src_iter.arrow_batch_iterator.current_batch_idx = target_idx
-                    # print(f"Worker {local_worker_id} restored iterator to batch_idx: {target_idx}") # For debugging
-                except Exception as e:
-                    print(f"Worker {local_worker_id} ERROR applying state in __iter__: {e}. State was: {state_to_apply}")
+        # Ensure _iterator is created fresh or if it's None
+        self._iterator = self.dl_args.build_from_rank(
+            ddp_rank=local_rank,
+            ddp_world_size=world_size,
+            worker_id=worker_info.id if worker_info else 0,
+            num_workers=worker_info.num_workers if worker_info else 1,
+            mode=self.dataset_key,
+        )
             
         return iter(self._iterator)
 
-    def get_state(self):
-        """Get the current iterator state for checkpointing."""
-        state = {}
-        # If state was loaded but not yet applied by __iter__, that's the most current view for saving.
-        if self._loaded_state_to_apply is not None and 'current_batch_idx' in self._loaded_state_to_apply:
-            state['current_batch_idx'] = self._loaded_state_to_apply['current_batch_idx']
-            return state
-
-        # Otherwise, try to get state from the live iterator if it exists.
-        if self._iterator is not None:
-            try:
-                current_batch_idx = (
-                    self._iterator.sequence_iterator
-                    .source_to_iterator['16b*']._src_iter
-                    .arrow_batch_iterator.current_batch_idx
-                )
-                state['current_batch_idx'] = current_batch_idx
-            except Exception:
-                state['current_batch_idx'] = None # Or an initial default like 0 if preferred
-        else:
-            # No iterator created yet and no pending state to apply.
-            state['current_batch_idx'] = None # Or an initial default like 0 if preferred
-        return state
-
-    def _set_state(self, state):
-        """Store the iterator state. It will be applied when __iter__ is called."""
-        # This method is called by ByteLatentDataModule.setup() before __iter__ is called.
-        # It should store the state, not try to apply it immediately, as self._iterator is not yet created.
-        self._loaded_state_to_apply = state
-        # print(f"PackedBatchDataset._set_state called, storing: {state}") # For debugging
 
 
 def to_device_async(batch, device):
@@ -303,93 +283,59 @@ class ByteLatentLightningModule(pl.LightningModule):
 # DataModule and Iterator Wrapper (No IterableDataset)
 ###############################################
 class ByteLatentDataModule(pl.LightningDataModule):
-    def __init__(self, args: TrainArgs):
+    def __init__(self, dl_args: DataloaderArgs):
         super().__init__()
-        self.args = args
-        self.train_data_loader = None
-        self.val_data_loader = None
-        self.train_iterator_state = None
-        self.current_batch_idx = 0
-
-    def _build_dataloader(self, mode: str = "train"):
-        """
-        Returns a torch.utils.data.DataLoader whose `dataset` streams the same
-        `Batch` objects you used to obtain from directly looping over
-        `args.build_from_rank(...)`.
-
-        • `batch_size` **must** stay `None` because the dataset already
-          emits *batched* samples.
-        • No `collate_fn` is needed: each iterator element is forwarded
-          unchanged.
-        """
-        dataset = PackedBatchDataset(self.args.data, mode)
-        return DataLoader(
-            dataset,
-            batch_size=None,  # one Batch per iteration
-            num_workers=4,  # Using 4 workers by default
-            pin_memory=True,
-            persistent_workers=True,
-        )
-
-    def setup(self, stage=None):
-        self.train_data_loader = self._build_dataloader(mode="train")
-        self.val_data_loader = self._build_dataloader(mode="validation")
-        # Restore iterator state if available
-        if self.train_iterator_state is not None and hasattr(self.train_data_loader.dataset, '_set_state'):
-            self.train_data_loader.dataset._set_state(self.train_iterator_state)
-
-    # Modern PyTorch Lightning checkpoint hooks
-    def state_dict(self):
-        state_payload = {}
-        if self.train_data_loader is not None and hasattr(self.train_data_loader.dataset, 'get_state'):
-            local_iterator_state = self.train_data_loader.dataset.get_state()
-        else:
-            local_iterator_state = None # Or an empty dict, depending on what get_state might return
-
-        if dist.is_available() and dist.is_initialized():
-            world_size = dist.get_world_size()
-            # Everyone needs to participate in all_gather_object
-            gathered_states = [None] * world_size
-            dist.all_gather_object(gathered_states, local_iterator_state)
-            # The actual content of the checkpoint is typically written by rank 0.
-            # For DataModule state, it's good practice for rank 0 to save all gathered states.
-            # Other ranks will also have `gathered_states` but their return value from state_dict might be ignored by the saver.
-            state_payload['per_rank_train_iterator_states'] = gathered_states
-        else:
-            # Non-DDP mode or DDP not initialized
-            state_payload['per_rank_train_iterator_states'] = [local_iterator_state]
+        self.dl_args = dl_args
         
-        return state_payload
+        self.train_dataset: PackedBatchDataset | None = None
+        self.val_dataset: PackedBatchDataset | None = None
+        
+        self._train_dataloader_instance: StatefulDataLoader | None = None
+        self._val_dataloader_instance: StatefulDataLoader | None = None
+        
+        self._loaded_train_dataloader_state = None
 
-    def load_state_dict(self, state_dict_from_ckpt):
-        all_rank_states = state_dict_from_ckpt.get('per_rank_train_iterator_states')
+    def setup(self, stage: str | None = None):
+        # setup is called before train_dataloader, val_dataloader, etc.
+        # We create datasets here. DataLoaders are created on-demand by their respective methods.
+        self.train_dataset = PackedBatchDataset(self.dl_args, dataset_key="train")
+        self.val_dataset = PackedBatchDataset(self.dl_args, dataset_key="validation")
 
-        if all_rank_states:
-            if dist.is_available() and dist.is_initialized():
-                rank = dist.get_rank()
-                if rank < len(all_rank_states):
-                    self.train_iterator_state = all_rank_states[rank]
-                else:
-                    # Current rank is out of bounds for the loaded states (e.g., trained on N GPUs, now running on M > N GPUs)
-                    self.train_iterator_state = None # Start fresh for this rank
-            else:
-                # Non-DDP mode or DDP not initialized
-                self.train_iterator_state = all_rank_states[0]
-        else:
-            self.train_iterator_state = None
+    def state_dict(self):
+        payload = {}
+        if self._train_dataloader_instance is not None:
+            payload['train_dataloader_state'] = self._train_dataloader_instance.state_dict()
+        return payload
 
+    def load_state_dict(self, checkpoint_state):
+        self._loaded_train_dataloader_state = checkpoint_state.get('train_dataloader_state')
 
-    def train_dataloader(self):
-        return self.train_data_loader
+    def train_dataloader(self) -> StatefulDataLoader:
+        if self._train_dataloader_instance is None:
+            self._train_dataloader_instance = StatefulDataLoader(
+                self.train_dataset,
+                batch_size=None,  # Dataset yields pre-formed batches
+                num_workers=4, 
+                pin_memory=True,
+                persistent_workers=True # Crucial for stateful iteration
+            )
+            if self._loaded_train_dataloader_state is not None:
+                self._train_dataloader_instance.load_state_dict(self._loaded_train_dataloader_state)
+                self._loaded_train_dataloader_state = None # Clear after applying
+        return self._train_dataloader_instance
 
-    def val_dataloader(self):
-        return self.val_data_loader
+    def val_dataloader(self) -> StatefulDataLoader:
+        if self._val_dataloader_instance is None:
+            self._val_dataloader_instance = StatefulDataLoader(
+                self.val_dataset,
+                batch_size=None,
+                num_workers=4,
+                pin_memory=True,
+                persistent_workers=True
+            )
+        return self._val_dataloader_instance
 
-    def transfer_batch_to_device(self, batch, device, dataloader_idx):
-        """
-        Override LightningModule to move all batch elements to the correct device.
-        """
-        return batch
+    # transfer_batch_to_device remains the same
 
 
 ###############################################
@@ -410,7 +356,7 @@ def train(args: TrainArgs, num_gpus):
     model = ByteLatentLightningModule(args)
 
     # Use test_mode parameter
-    data_module = ByteLatentDataModule(args)
+    data_module = ByteLatentDataModule(args.data)
 
     # Set up Weights & Biases logger
     wandb_logger = WandbLogger(project="byte-latent")
@@ -428,7 +374,7 @@ def train(args: TrainArgs, num_gpus):
         strategy="ddp",
         accelerator="auto",
         devices=num_gpus,
-        callbacks=checkpoint_callback,
+        callbacks=[checkpoint_callback, StatefulDataloaderCheckpoint()],
         gradient_clip_val=None,  # must be none for fused adam
         accumulate_grad_batches=args.grad_acc_steps,
         precision="bf16-mixed",
