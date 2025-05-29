@@ -3,125 +3,13 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
-import argparse
 from scipy.optimize import curve_fit
+from math import log, exp
+from scipy.stats import t
 
 def load_wandb_csv(file_path: str) -> pd.DataFrame:
     """Load a wandb export CSV file."""
     return pd.read_csv(file_path)
-
-def calculate_improvement_rates(df: pd.DataFrame, 
-                              loss_column: str = 'val/loss', 
-                              step_column: str = '_step',
-                              window_size: int = 5) -> Tuple[pd.Series, pd.Series, pd.Series]:
-    """
-    Calculate the improvement rates using the specified formula:
-    recent_ratio = (loss[-1] - loss[-2]) / loss[-2]   # fractional drop
-    slope = recent_ratio / (logC[-1] - logC[-2])  # per decade
-    
-    Args:
-        df: DataFrame containing the training data
-        loss_column: Name of the column containing loss values
-        step_column: Name of the column containing step values
-        window_size: Number of steps to consider for smoothing
-        
-    Returns:
-        Tuple of (fractional_drops, slopes_per_decade, should_stop)
-    """
-    # Sort by step to ensure correct ordering
-    df = df.sort_values(by=step_column).copy()
-    
-    # Calculate fractional drop in loss
-    loss = df[loss_column].values
-    fractional_drops = np.zeros_like(loss, dtype=float)
-    fractional_drops[1:] = (loss[1:] - loss[:-1]) / loss[:-1]
-    
-    # Calculate steps (convert to log scale for per-decade calculation)
-    steps = df[step_column].values
-    log_steps = np.log10(np.maximum(steps, 1))  # Avoid log(0)
-    
-    # Calculate slope per decade (change in fractional drop per log10 step)
-    slopes_per_decade = np.zeros_like(steps, dtype=float)
-    for i in range(2, len(steps)):
-        if log_steps[i] != log_steps[i-1]:  # Avoid division by zero
-            slopes_per_decade[i] = fractional_drops[i] / (log_steps[i] - log_steps[i-1])
-    
-    # Apply rolling mean to smooth the slopes
-    smoothed_slopes = pd.Series(slopes_per_decade).rolling(
-        window=window_size, min_periods=1).mean().values
-    
-    # Determine if training should stop (slope magnitude < 1%)
-    should_stop = np.abs(smoothed_slopes) < 0.01
-    
-    return pd.Series(fractional_drops, index=df.index), \
-           pd.Series(smoothed_slopes, index=df.index), \
-           pd.Series(should_stop, index=df.index)
-
-def plot_improvement_rates(df: pd.DataFrame, 
-                         loss_column: str,
-                         step_column: str,
-                         fractional_drops: pd.Series,
-                         slopes_per_decade: pd.Series,
-                         should_stop: pd.Series,
-                         title: str = 'Training Analysis',
-                         output_path: Optional[str] = None):
-    """
-    Plot the loss curve, fractional drops, and improvement slopes.
-    
-    Args:
-        df: DataFrame containing the training data
-        loss_column: Name of the column containing loss values
-        step_column: Name of the column containing step values
-        fractional_drops: Fractional drop in loss at each step
-        slopes_per_decade: Smoothed slopes of improvement per decade
-        should_stop: Boolean series indicating if training should stop at each step
-        title: Plot title
-        output_path: Optional path to save the plot
-    """
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
-    steps = df[step_column]
-    
-    # Plot 1: Loss curve
-    ax1.plot(steps, df[loss_column], 'b-', label='Loss')
-    ax1.set_ylabel('Loss')
-    ax1.set_title('Training Loss')
-    ax1.grid(True)
-    
-    # Mark points where training should stop
-    stop_steps = steps[should_stop & (steps > steps.min())]
-    if not stop_steps.empty:
-        ax1.scatter(stop_steps, df.loc[stop_steps.index, loss_column], 
-                   color='red', s=50, marker='x', label='Should stop')
-    ax1.legend()
-    
-    # Plot 2: Fractional drops
-    ax2.plot(steps, fractional_drops, 'g-', label='Fractional Drop')
-    ax2.axhline(y=0, color='k', linestyle='--', alpha=0.3)
-    ax2.set_ylabel('(L(t) - L(t-1)) / L(t-1)')
-    ax2.set_title('Fractional Drop in Loss')
-    ax2.grid(True)
-    
-    # Plot 3: Slopes per decade
-    ax3.plot(steps, slopes_per_decade, 'r-', label='Slope per Decade')
-    ax3.axhline(y=0, color='k', linestyle='--', alpha=0.3)
-    ax3.axhline(y=0.01, color='orange', linestyle='--', alpha=0.5, label='1% Threshold')
-    ax3.axhline(y=-0.01, color='orange', linestyle='--', alpha=0.5)
-    ax3.set_xlabel('Steps')
-    ax3.set_ylabel('Slope (per decade)')
-    ax3.set_title('Improvement Rate (Slope per Decade)')
-    ax3.grid(True)
-    ax3.legend()
-    
-    plt.suptitle(title)
-    plt.tight_layout()
-    plt.subplots_adjust(top=0.92)
-    
-    if output_path:
-        plt.savefig(output_path)
-        print(f"Plot saved to {output_path}")
-    else:
-        plt.show()
 
 def smooth_data(y, window_size=5):
     """
@@ -154,7 +42,59 @@ def smooth_data(y, window_size=5):
     
     return smoothed
 
-def analyze_two_points(df: pd.DataFrame, loss_column: str, step_column: str, idx1: int, idx2: int, window_size=11, min_points_skip=0):
+
+class CITracker:
+    def __init__(self, idx2, C_fixed, alpha=0.05):
+        self.idx2 = idx2
+        self.C    = C_fixed
+        self.alpha = alpha
+        self.n = self.Sx = self.Sy = self.Sxx = self.Sxy = 0
+        self.SSE = 0      # sum of squared residuals
+
+    def update(self, step, loss):
+        if step <= 0:
+            raise ValueError("step must be > 0")
+
+        x = log(step)
+        y = log(loss - self.C)
+
+        # -------- accumulate moments --------
+        self.n  += 1
+        self.Sx += x
+        self.Sy += y
+        self.Sxx += x*x
+        self.Sxy += x*y
+
+        # need ≥3 distinct points before we can form σ²
+        if self.n < 10:
+            return None, float("inf")
+
+        mean_x       = self.Sx / self.n
+        Sxx_central  = self.Sxx - self.Sx**2 / self.n          # ∑(x_i-mean_x)^2
+        if Sxx_central <= 1e-14:                               # duplicated steps?
+            return None, float("inf")
+
+        # ------- OLS coefficients (closed form) -------
+        beta  = (self.Sxy - self.Sx*self.Sy / self.n) / Sxx_central
+        logA  = (self.Sy - beta*self.Sx) / self.n
+
+        # running residual sum of squares
+        resid  = y - (logA + beta * x)
+        self.SSE += resid**2
+        sigma2 = self.SSE / (self.n - 2)
+
+        # ------- CI half-width at x2 -------
+        x2      = log(self.idx2)
+        var_pred = sigma2 * (1/self.n + (x2 - mean_x)**2 / Sxx_central)
+        se_pred  = var_pred**0.5                                  # always real-valued
+
+        t_mult   = t.ppf(1 - self.alpha/2, df=self.n - 2)
+        half_w   = t_mult * se_pred
+        pred     = exp(logA + beta * x2) + self.C
+        rel_hw   = half_w / pred
+        return pred, rel_hw
+
+def analyze_two_points(df: pd.DataFrame, loss_column: str, step_column: str, idx2: int, window_size=11, min_points_skip=0):
     """
     Analyze improvement, fit power law up to idx1, predict at idx2.
     Skips initial min_points_skip points to avoid initialization effects.
@@ -168,23 +108,16 @@ def analyze_two_points(df: pd.DataFrame, loss_column: str, step_column: str, idx
         window_size: Size of the smoothing window
         min_points_skip: Number of initial points to skip (to avoid initialization instability)
     """
-    if not (0 <= idx1 < len(df) and 0 <= idx2 < len(df) and idx1 < idx2):
+    if not (0 <= idx2 < len(df)):
         print(f"Invalid indices. Ensure 0 <= idx1 < idx2 < {len(df)}.")
         return
         
     # Adjust indices to account for skipped points
-    min_points_skip = min(min_points_skip, idx1 - 1)  # Need at least 2 points after skipping
     start_idx = min_points_skip
     
     # Get data with initial points skipped
     df_analysis = df.iloc[start_idx:].reset_index(drop=True)
-    idx1_adj = idx1 - start_idx
     idx2_adj = idx2 - start_idx
-    
-    # Ensure adjusted indices are valid
-    if idx1_adj < 0 or idx2_adj >= len(df_analysis) or idx1_adj >= idx2_adj:
-        print("Not enough data points after skipping initial points.")
-        return
     
     # --- 1. Load and Smooth Data --- 
     all_steps = df_analysis[step_column].values.astype(float)
@@ -192,26 +125,25 @@ def analyze_two_points(df: pd.DataFrame, loss_column: str, step_column: str, idx
     all_smoothed_losses = smooth_data(all_raw_losses, window_size)
     
     # Get values at the specified indices (adjusted for skipped points)
-    step_val_at_idx1 = all_steps[idx1_adj]
     step_val_at_idx2 = all_steps[idx2_adj]
-    raw_loss_at_idx1 = all_raw_losses[idx1_adj]
     raw_loss_at_idx2 = all_raw_losses[idx2_adj]
-    smoothed_loss_at_idx1 = all_smoothed_losses[idx1_adj]
     smoothed_loss_at_idx2 = all_smoothed_losses[idx2_adj]
-    
-    # Calculate slope based on smoothed data between idx1 and idx2
-    log_steps_diff = np.log10(step_val_at_idx2) - np.log10(step_val_at_idx1) \
-        if step_val_at_idx1 > 0 and step_val_at_idx2 > 0 else 0
-    
-    slope_percent = float('inf')
-    if log_steps_diff != 0 and smoothed_loss_at_idx1 != 0:
-        slope_decay = ((smoothed_loss_at_idx2 - smoothed_loss_at_idx1) / smoothed_loss_at_idx1) / log_steps_diff
-        slope_percent = slope_decay * 100
 
-    print(f"Analyzing from step {step_val_at_idx1} (idx1={idx1}, adj_idx={idx1_adj}) to step {step_val_at_idx2} (idx2={idx2}, adj_idx={idx2_adj}):")
-    print(f"  Raw Loss:      {raw_loss_at_idx1:.6f} -> {raw_loss_at_idx2:.6f}")
-    print(f"  Smoothed Loss: {smoothed_loss_at_idx1:.6f} -> {smoothed_loss_at_idx2:.6f} | Slope: {slope_percent:.2f}%/decade")
+    tracker = CITracker(idx2=idx2_adj, C_fixed=1.19) # irreducible loss
 
+    idx1 = None
+    for step, loss in zip(all_steps, all_smoothed_losses):
+        pred, rel_hw = tracker.update(step, loss)
+        if step > 700 and rel_hw <= 0.021:
+            idx1 = np.where(all_steps == step)[0][0] + start_idx
+            print(idx1 / idx2)
+            break
+
+    idx1_adj = idx1 - start_idx
+    step_val_at_idx1 = all_steps[idx1_adj]
+    raw_loss_at_idx1 = all_raw_losses[idx1_adj]
+    smoothed_loss_at_idx1 = all_smoothed_losses[idx1_adj]
+    
     # --- 2. Data for Fitting (up to idx1_adj) ---
     steps_for_fitting = all_steps[:idx1_adj + 1]
     losses_for_fitting = all_smoothed_losses[:idx1_adj + 1]
@@ -300,7 +232,6 @@ def analyze_two_points(df: pd.DataFrame, loss_column: str, step_column: str, idx
                         color='orange', marker='x', s=100, zorder=11, 
                         label=f'Predicted at {step_val_at_idx2}: {predicted_loss_val:.6f}')
 
-        # plt.xscale('log') # User had this commented, keeping it so
         plt.xlabel('Step') # Changed from 'Step (log scale)' as xscale is commented
         plt.ylabel('Loss')
         plt.title(f'Power Law Extrapolation: Fit up to Step {step_val_at_idx1}, Predict at Step {step_val_at_idx2}')
@@ -338,8 +269,11 @@ def analyze_file(file_path: str):
     # Sort by step to ensure correct ordering
     df = df.sort_values(by=step_column)
     
-    idx1, idx2 = 236, 378
-    analyze_two_points(df, loss_column, step_column, idx1, idx2)
+    # idx1, idx2 = 189, 378
+    # idx1, idx2 = 193, 378
+    idx2 = 378
+
+    analyze_two_points(df, loss_column, step_column, idx2)
 
 def main():
     file_path = "/Users/arnavshah/Code/dnaBLT/run_curves/wandb_export_2025-05-28T17_51_03.274-04_00.csv"
