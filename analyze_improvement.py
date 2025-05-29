@@ -124,104 +124,201 @@ def plot_improvement_rates(df: pd.DataFrame,
         plt.show()
 
 def smooth_data(y, window_size=5):
-    """Apply a simple moving average smoother to the data."""
+    """
+    Apply a running average smoother to the data with proper edge handling.
+    
+    Args:
+        y: Input data to be smoothed
+        window_size: Size of the moving window (must be odd)
+        
+    Returns:
+        Smoothed data with the same length as input
+    """
     if window_size < 2:
         return y
+        
+    # Ensure window size is odd
+    if window_size % 2 == 0:
+        window_size += 1
+        
+    half_window = window_size // 2
+    y_padded = np.pad(y, (half_window, half_window), mode='edge')
     window = np.ones(window_size) / window_size
-    return np.convolve(y, window, mode='same')
+    smoothed = np.convolve(y_padded, window, mode='valid')
+    
+    # Ensure output has the same length as input
+    if len(smoothed) > len(y):
+        diff = len(smoothed) - len(y)
+        start = diff // 2
+        smoothed = smoothed[start:start + len(y)]
+    
+    return smoothed
 
-def analyze_two_points(df: pd.DataFrame, loss_column: str, step_column: str, idx1: int, idx2: int):
-    """Analyze the improvement between two points in the training data."""
-    if idx1 < 0 or idx2 >= len(df) or idx1 >= idx2:
-        print("Invalid indices. Please ensure 0 <= idx1 < idx2 < len(df)")
-        return
+def analyze_two_points(df: pd.DataFrame, loss_column: str, step_column: str, idx1: int, idx2: int, window_size=17, min_points_skip=10):
+    """
+    Analyze improvement, fit power law up to idx1, predict at idx2.
+    Skips initial min_points_skip points to avoid initialization effects.
     
-    # Get the values
-    step1 = int(df[step_column].iloc[idx1])
-    step2 = int(df[step_column].iloc[idx2])
-    loss1 = df[loss_column].iloc[idx1]
-    loss2 = df[loss_column].iloc[idx2]
-    
-    # Calculate metrics
-    log_steps_diff = np.log10(step2) - np.log10(step1) if step1 > 0 and step2 > 0 else 0
-    if log_steps_diff != 0:
-        slope_per_decade = ((loss2 - loss1) / loss1) / log_steps_diff
-        slope_percent = slope_percent = slope_per_decade * 100  # Convert to percentage
-    else:
-        slope_percent = float('inf')
-    
-    print(f"{step1} -> {step2}: {loss1:.6f} -> {loss2:.6f} | {slope_percent:.2f}%/decade")
-
-    # Get all steps and losses up to the current point
-    steps = df[step_column].values[:idx2+1].astype(float)
-    losses = df[loss_column].values[:idx2+1]
-    
-    # Only use points where step > 0 to avoid log(0)
-    mask = steps > 0
-    if not np.any(mask):
-        print("No valid steps > 0 for power law fitting")
+    Args:
+        df: DataFrame containing the data
+        loss_column: Name of the column containing loss values
+        step_column: Name of the column containing step values
+        idx1: Index up to which to fit the power law
+        idx2: Index at which to make prediction
+        window_size: Size of the smoothing window
+        min_points_skip: Number of initial points to skip (to avoid initialization instability)
+    """
+    if not (0 <= idx1 < len(df) and 0 <= idx2 < len(df) and idx1 < idx2):
+        print(f"Invalid indices. Ensure 0 <= idx1 < idx2 < {len(df)}.")
         return
         
-    steps = steps[mask]
-    losses = losses[mask]
+    # Adjust indices to account for skipped points
+    min_points_skip = min(min_points_skip, idx1 - 1)  # Need at least 2 points after skipping
+    start_idx = min_points_skip
     
+    # Get data with initial points skipped
+    df_analysis = df.iloc[start_idx:].reset_index(drop=True)
+    idx1_adj = idx1 - start_idx
+    idx2_adj = idx2 - start_idx
+    
+    # Ensure adjusted indices are valid
+    if idx1_adj < 0 or idx2_adj >= len(df_analysis) or idx1_adj >= idx2_adj:
+        print("Not enough data points after skipping initial points.")
+        return
+    
+    # --- 1. Load and Smooth Data --- 
+    all_steps = df_analysis[step_column].values.astype(float)
+    all_raw_losses = df_analysis[loss_column].values
+    all_smoothed_losses = smooth_data(all_raw_losses, window_size)
+    
+    # Get values at the specified indices (adjusted for skipped points)
+    step_val_at_idx1 = all_steps[idx1_adj]
+    step_val_at_idx2 = all_steps[idx2_adj]
+    raw_loss_at_idx1 = all_raw_losses[idx1_adj]
+    raw_loss_at_idx2 = all_raw_losses[idx2_adj]
+    smoothed_loss_at_idx1 = all_smoothed_losses[idx1_adj]
+    smoothed_loss_at_idx2 = all_smoothed_losses[idx2_adj]
+    
+    # Calculate slope based on smoothed data between idx1 and idx2
+    log_steps_diff = np.log10(step_val_at_idx2) - np.log10(step_val_at_idx1) \
+        if step_val_at_idx1 > 0 and step_val_at_idx2 > 0 else 0
+    
+    slope_percent = float('inf')
+    if log_steps_diff != 0 and smoothed_loss_at_idx1 != 0:
+        slope_decay = ((smoothed_loss_at_idx2 - smoothed_loss_at_idx1) / smoothed_loss_at_idx1) / log_steps_diff
+        slope_percent = slope_decay * 100
+
+    print(f"Analyzing from step {step_val_at_idx1} (idx1={idx1}, adj_idx={idx1_adj}) to step {step_val_at_idx2} (idx2={idx2}, adj_idx={idx2_adj}):")
+    print(f"  Raw Loss:      {raw_loss_at_idx1:.6f} -> {raw_loss_at_idx2:.6f}")
+    print(f"  Smoothed Loss: {smoothed_loss_at_idx1:.6f} -> {smoothed_loss_at_idx2:.6f} | Slope: {slope_percent:.2f}%/decade")
+
+    # --- 2. Data for Fitting (up to idx1_adj) ---
+    steps_for_fitting = all_steps[:idx1_adj + 1]
+    losses_for_fitting = all_smoothed_losses[:idx1_adj + 1]
+    
+    # Only use points with positive steps for fitting
+    fit_mask = (steps_for_fitting > 0)
+    if not np.any(fit_mask):
+        print("No valid steps > 0 for power law fitting up to idx1.")
+        return
+    
+    steps_fit_masked = steps_for_fitting[fit_mask]
+    losses_fit_masked = losses_for_fitting[fit_mask]
+
+    if len(steps_fit_masked) < 3: # Need at least 3 points for 3 parameters
+        print(f"Not enough data points ({len(steps_fit_masked)}) for fitting up to idx1. Need at least 3.")
+        return
+
     # Define the power law function: L(t) = A * t^(-gamma) + C
     def power_law(t, A, gamma, C):
-        return A * (t ** -gamma) + C
-    
+        return A * (t**-gamma) + C
+
     try:
-        # Initial parameter guesses
-        p0 = [losses[0], 0.5, losses[-1]]
-        
-        # Fit the power law to all points up to idx2-1
+        # Initial parameter guesses for fitting
+        p0 = [losses_fit_masked[0], 0.5, losses_fit_masked[-1]]
+        bounds = ([0, 0, 0], [np.inf, 5, losses_fit_masked[-1] if losses_fit_masked[-1] > 0 else np.inf])
+
         popt, _ = curve_fit(
             power_law,
-            steps[:-1],
-            losses[:-1],
+            steps_fit_masked,
+            losses_fit_masked,
             p0=p0,
-            bounds=([0, 0, 0], [np.inf, 10, np.inf])
+            bounds=bounds,
+            maxfev=400*len(steps_fit_masked) # Increased max iterations
         )
+
+        # --- 3. Prediction (at step corresponding to idx2) --- 
+        predicted_loss_val = power_law(step_val_at_idx2, *popt)
+        # --- 4. Accuracy Measurement --- 
+        error_val = predicted_loss_val - smoothed_loss_at_idx2
+        relative_error_val = error_val / smoothed_loss_at_idx2 if smoothed_loss_at_idx2 != 0 else float('inf')
         
-        # Predict the next point
-        predicted_loss = power_law(steps[-1], *popt)
-        actual_loss = losses[-1]
-        error = predicted_loss - actual_loss
-        relative_error = error / actual_loss if actual_loss != 0 else float('inf')
-        
-        print(f"\nPower Law Fit: L(t) = {popt[0]:.2e} * t^(-{popt[1]:.3f}) + {popt[2]:.4f}")
-        print(f"Predicted: {predicted_loss:.6f}, Actual: {actual_loss:.6f}")
-        print(f"Error: {error:.2e} ({relative_error*100:.1f}%)")
-        
-        # Plot the results
+        print(f"\nPower Law Fit (based on data up to step {step_val_at_idx1}): L(t) = {popt[0]:.2e} * t^(-{popt[1]:.3f}) + {popt[2]:.4f}")
+        print(f"Prediction for step {step_val_at_idx2}:")
+        print(f"  Predicted Loss: {predicted_loss_val:.6f}")
+        print(f"  Actual Smoothed Loss: {smoothed_loss_at_idx2:.6f}")
+        print(f"  Error: {error_val:.2e} ({relative_error_val*100:.1f}%)")
+
+        # --- 5. Visualization --- 
         plt.figure(figsize=(12, 6))
+
+        # Plot raw data (all available points after skipping)
+        plt.scatter(all_steps, all_smoothed_losses, color='lightgray', alpha=0.4, label='Raw Data')
         
-        # Plot raw data points
-        plt.scatter(steps, losses, color='lightgray', alpha=0.5, label='Raw Data')
-        plt.plot(steps, losses, 'b-', linewidth=2, label='Data')
+        # Plot smoothed data (all available points after skipping)
+        plt.plot(all_steps, all_smoothed_losses, 'b-', linewidth=2, label='Smoothed Data')
+
+        # Plot power law curve (fitted up to idx1, extrapolated to idx2)
+        # Ensure t_plot starts from the first positive step used in fitting and extends to step_to_predict_on
+        t_plot_start = np.min(steps_fit_masked[steps_fit_masked > 0]) if np.any(steps_fit_masked > 0) else 1
+        t_plot_end = step_val_at_idx2
         
-        # Plot power law fit
-        t_plot = np.linspace(steps[0], steps[-1], 1000)
-        power_law_fit = power_law(t_plot, *popt)
-        plt.plot(t_plot, power_law_fit, 'r--', linewidth=2, 
-                label=f'Power Law Fit: {popt[0]:.2e}·t^(-{popt[1]:.3f}) + {popt[2]:.4f}')
+        # Add vertical lines for key points
+        plt.axvline(x=step_val_at_idx1, color='purple', linestyle='--', 
+                   label=f'Fitting end (idx1={idx1}, step={step_val_at_idx1})')
+        plt.axvline(x=step_val_at_idx2, color='red', linestyle='--', 
+                   label=f'Prediction point (idx2={idx2}, step={step_val_at_idx2})')
         
-        # Highlight the predicted point
-        plt.scatter([steps[-1]], [actual_loss], color='red', s=100, 
-                   label=f'Actual: {actual_loss:.6f}\nPredicted: {predicted_loss:.6f}')
+        # Add a note about skipped points
+        plt.annotate(f'Skipped first {min_points_skip} points', 
+                    xy=(0.02, 0.95), xycoords='axes fraction',
+                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
         
-        plt.xscale('log')
-        plt.xlabel('Step (log scale)')
+        if t_plot_start < t_plot_end and step_val_at_idx2 > 0:
+            t_for_curve_plot = np.linspace(t_plot_start, t_plot_end, 500)
+            fitted_curve_on_plot = power_law(t_for_curve_plot, *popt)
+            plt.plot(t_for_curve_plot, fitted_curve_on_plot, 'r--', linewidth=2, 
+                     label=f'Power Law Fit (to {step_val_at_idx1}, pred to {step_val_at_idx2})')
+        
+        # Highlight the actual smoothed point at idx2
+        if step_val_at_idx2 > 0:
+            plt.scatter([step_val_at_idx2], [smoothed_loss_at_idx2], 
+                        color='green', marker='o', s=100, zorder=10, 
+                        label=f'Actual Smoothed at {step_val_at_idx2}: {smoothed_loss_at_idx2:.6f}')
+            # Highlight the predicted point at idx2
+            plt.scatter([step_val_at_idx2], [predicted_loss_val], 
+                        color='orange', marker='x', s=100, zorder=11, 
+                        label=f'Predicted at {step_val_at_idx2}: {predicted_loss_val:.6f}')
+
+        # plt.xscale('log') # User had this commented, keeping it so
+        plt.xlabel('Step') # Changed from 'Step (log scale)' as xscale is commented
         plt.ylabel('Loss')
-        plt.title('Power Law Fit vs Smoothed Data')
+        plt.title(f'Power Law Extrapolation: Fit up to Step {step_val_at_idx1}, Predict at Step {step_val_at_idx2}')
         plt.legend()
         plt.grid(True, which="both", ls="--")
         plt.tight_layout()
         plt.show()
-        
-    except Exception as e:
+
+    except RuntimeError as e:
         print(f"\nPower law fitting failed: {str(e)}")
+        print("This often happens if data is noisy, C bound is too restrictive, or p0 is far off.")
+        print(f"  Consider adjusting window_size for smoothing, bounds, or initial guesses (p0).")
         if 'popt' in locals():
-            print(f"Last successful parameters: A={popt[0]:.2e}, gamma={popt[1]:.3f}, C={popt[2]:.4f}")
+             print(f"  Last attempted parameters: A={popt[0]:.2e}, gamma={popt[1]:.3f}, C={popt[2]:.4f}")
+    except Exception as e:
+        print(f"\nAn unexpected error occurred during analysis: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 def analyze_file(file_path: str):
     """Analyze a single wandb export file."""
@@ -242,44 +339,17 @@ def analyze_file(file_path: str):
     df = df.sort_values(by=step_column)
     
     # Show first few rows for reference
-    print("\nFirst few data points:")
-    print(df[[step_column, loss_column]].head())
-    
-    while True:
-        try:
-            print("\nEnter two indices to analyze (or 'q' to quit):")
-            user_input = input("Indices (start end): ").strip()
-            
-            if user_input.lower() == 'q':
-                break
-                
-            idx1, idx2 = map(int, user_input.split())
-            analyze_two_points(df, loss_column, step_column, idx1, idx2)
-            
-        except ValueError:
-            print("Please enter two integers separated by a space.")
-        except KeyboardInterrupt:
-            print("\nExiting...")
-            break
-        except Exception as e:
-            print(f"An error occurred: {e}")
+        
+    idx1, idx2 = 189, 378
+    analyze_two_points(df, loss_column, step_column, idx1, idx2)
 
 def main():
-    files = ["/Users/arnavshah/Code/dnaBLT/run_curves/wandb_export_2025-05-28T17_51_03.274-04_00.csv"]
-    # files = ["/Users/arnavshah/Code/dnaBLT/run_curves/wandb_export_2025-05-28T18_09_04.251-04_00.csv"]
-    
-    for file_path in files:
-        if os.path.exists(file_path):
-            analyze_file(file_path)
-        else:
-            print(f"File not found: {file_path}")
-            return
-        
-        # Ask if user wants to analyze another file
-        if len(files) > 1:
-            another = input("\nAnalyze another file? (y/n): ").strip().lower()
-            if another != 'y':
-                break
+    file_path = "/Users/arnavshah/Code/dnaBLT/run_curves/wandb_export_2025-05-28T17_51_03.274-04_00.csv"
+    if os.path.exists(file_path):
+        analyze_file(file_path)
+    else:
+        print(f"File not found: {file_path}")
+        return
 
 if __name__ == "__main__":
     main()
