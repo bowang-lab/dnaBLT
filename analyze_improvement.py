@@ -154,7 +154,7 @@ def smooth_data(y, window_size=5):
     
     return smoothed
 
-def analyze_two_points(df: pd.DataFrame, loss_column: str, step_column: str, idx1: int, idx2: int, window_size=17, min_points_skip=10):
+def analyze_two_points(df: pd.DataFrame, loss_column: str, step_column: str, idx1: int, idx2: int, window_size=11, min_points_skip=0):
     """
     Analyze improvement, fit power law up to idx1, predict at idx2.
     Skips initial min_points_skip points to avoid initialization effects.
@@ -338,9 +338,7 @@ def analyze_file(file_path: str):
     # Sort by step to ensure correct ordering
     df = df.sort_values(by=step_column)
     
-    # Show first few rows for reference
-        
-    idx1, idx2 = 189, 378
+    idx1, idx2 = 236, 378
     analyze_two_points(df, loss_column, step_column, idx1, idx2)
 
 def main():
