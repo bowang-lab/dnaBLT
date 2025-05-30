@@ -86,7 +86,7 @@ class ArrowFileIterator:
         arrow_batch_size: int = 100,
         dataset_files: Optional[list[str]] = None,
         file_format: str = "arrow",
-        shuffle: bool = False,
+        shuffle: bool = False, # false for apples-to-apples runs. unless resuming from crashed run (pre-StatefulDataIterator)
         seed: int = 42,
     ):
         assert 0 <= worker_id < num_workers, (worker_id, num_workers)

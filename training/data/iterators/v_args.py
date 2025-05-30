@@ -156,6 +156,7 @@ class DataloaderArgs(BaseModel):
     s3_profile: str | None = None
     # root_dir: str | None = "/large_storage/goodarzilab/ashah"
     root_dir: str | None = "/Users/arnavshah/Documents"
+    # ingenious hack: use 16b[34].arrow glob match for new data if crash (pre StatefulDataLoader)
     sources: dict[str, dict[str, float]] = {"train": {"16b*": 1}, "validation": {"entropies_validation.arrow": 1}}
     batch_size: int = 16
     seq_len: int = 4096

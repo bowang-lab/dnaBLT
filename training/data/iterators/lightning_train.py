@@ -410,9 +410,6 @@ if __name__ == "__main__":
     )
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size.")
     parser.add_argument(
-        "--grad_accum_size", type=int, default=8, help="Gradient accumulation size."
-    )
-    parser.add_argument(
         "--patch_size", type=int, default=2, choices=[2, 4], help="Patch size."
     )
     parser.add_argument("--lr", type=float, default=8e-4, help="Learning rate.")
@@ -431,9 +428,9 @@ if __name__ == "__main__":
     parser.add_argument("--num_gpus", type=int, default=1, help="Number of GPUs")
     args = parser.parse_args()
 
-    steps = int(args.tokens) // (
-        args.batch_size * args.grad_accum_size * 8192 * args.num_gpus
-    )  # guard against tokens float
+    grad_accum_size = 2 ** 21 // (args.batch_size * 8192 * args.num_gpus)
+
+    steps = int(args.tokens) // (2 ** 21)
     seq_len = 8192 // args.patch_size
 
     if args.patch_size == 2:
@@ -446,7 +443,7 @@ if __name__ == "__main__":
         raise ValueError(f"Invalid patch size: {args.patch_size}. Must be 2 or 4.")
 
     train_args = TrainArgs(
-        grad_acc_steps=args.grad_accum_size,
+        grad_acc_steps=grad_accum_size,
         steps=steps,
         max_steps=steps,
         data=DataloaderArgs(
@@ -456,6 +453,7 @@ if __name__ == "__main__":
                 max_patch_length=max_patch_length,
             ),
             seq_len=seq_len,
+            buffer_size=args.batch_size,
         ),
         optim=OptimArgs(
             lr=args.lr,
