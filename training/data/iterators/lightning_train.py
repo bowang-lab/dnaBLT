@@ -38,16 +38,29 @@ class StatefulDataloaderCheckpoint(pl.Callback):
     a dictionary {rank: state_dict} inside the checkpoint.
     """
     def on_save_checkpoint(self, trainer, pl_module, checkpoint):
-        # All ranks call this
+        """
+        Save a full `StatefulDataLoader.state_dict()` for every rank so that the
+        training job can be resumed bit‑for‑bit.  We use
+        ``torch.distributed.all_gather_object`` to collect the state dictionaries
+        from all ranks onto rank 0 and then stash them under the
+        ``"dataloader_state"`` key in the checkpoint.
+        """
+        # Full state for *this* rank’s DataLoader
         local_state = trainer.datamodule.train_dataloader().state_dict()
 
-        # Gather a list [state_rank0, state_rank1, …]
-        states = trainer.strategy.all_gather(local_state)
+        if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
+            # Gather the dictionaries onto rank 0
+            world_size = dist.get_world_size()
+            gathered_states = [None] * world_size
+            dist.all_gather_object(gathered_states, local_state)
 
-        if trainer.global_rank == 0:          # write only once
-            checkpoint["dataloader_state"] = {
-                r: s for r, s in enumerate(states)
-            }
+            if trainer.global_rank == 0:
+                checkpoint["dataloader_state"] = {
+                    rank: state for rank, state in enumerate(gathered_states)
+                }
+        else:
+            # Single‑process training – just save our own state.
+            checkpoint["dataloader_state"] = {0: local_state}
 
     def on_load_checkpoint(self, trainer, pl_module, checkpoint):
         rank_state = checkpoint.get("dataloader_state", {}).get(trainer.global_rank)
@@ -105,15 +118,6 @@ class PackedBatchDataset(IterableDataset):
         super().__init__()
         self.dl_args = dl_args
         self.dataset_key = dataset_key
-        self._iterator = None
-    
-    def state_dict(self):
-        return {"i": self._iterator.sequence_iterator.source_to_iterator['16b*']._src_iter.arrow_batch_iterator.current_batch_idx}
-
-    def load_state_dict(self, state_dict):
-        self._iterator.sequence_iterator.source_to_iterator['16b*']._src_iter.arrow_batch_iterator.current_batch_idx = state_dict["i"]
-
-    def __iter__(self):
         worker_info = get_worker_info()
         local_rank = dist.get_rank() if dist.is_initialized() else 0
         world_size = dist.get_world_size() if dist.is_initialized() else 1
@@ -126,7 +130,21 @@ class PackedBatchDataset(IterableDataset):
             num_workers=worker_info.num_workers if worker_info else 1,
             mode=self.dataset_key,
         )
-            
+    
+    def state_dict(self):
+        if self.dataset_key == "train":
+            return {"i": self._iterator.sequence_iterator.source_to_iterator['16b*']._src_iter.arrow_batch_iterator.current_batch_idx}
+        else:
+            return {"i": self._iterator.sequence_iterator.source_to_iterator['entropies_validation.arrow']._src_iter.arrow_batch_iterator.current_batch_idx}
+
+    def load_state_dict(self, state_dict):
+        if self.dataset_key == "train":
+            # Load state for training dataset
+            self._iterator.sequence_iterator.source_to_iterator['16b*']._src_iter.arrow_batch_iterator.current_batch_idx = state_dict["i"]
+        else:
+            self._iterator.sequence_iterator.source_to_iterator['entropies_validation.arrow']._src_iter.arrow_batch_iterator.current_batch_idx = state_dict["i"]
+
+    def __iter__(self):
         return iter(self._iterator)
 
 
@@ -300,15 +318,6 @@ class ByteLatentDataModule(pl.LightningDataModule):
         # We create datasets here. DataLoaders are created on-demand by their respective methods.
         self.train_dataset = PackedBatchDataset(self.dl_args, dataset_key="train")
         self.val_dataset = PackedBatchDataset(self.dl_args, dataset_key="validation")
-
-    def state_dict(self):
-        payload = {}
-        if self._train_dataloader_instance is not None:
-            payload['train_dataloader_state'] = self._train_dataloader_instance.state_dict()
-        return payload
-
-    def load_state_dict(self, checkpoint_state):
-        self._loaded_train_dataloader_state = checkpoint_state.get('train_dataloader_state')
 
     def train_dataloader(self) -> StatefulDataLoader:
         if self._train_dataloader_instance is None:

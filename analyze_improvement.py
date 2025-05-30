@@ -134,10 +134,14 @@ def analyze_two_points(df: pd.DataFrame, loss_column: str, step_column: str, idx
     idx1 = None
     for step, loss in zip(all_steps, all_smoothed_losses):
         pred, rel_hw = tracker.update(step, loss)
-        if step > 700 and rel_hw <= 0.021:
+        if step > all_steps[-1] * 0.1 and rel_hw <= 0.021:
             idx1 = np.where(all_steps == step)[0][0] + start_idx
             print(idx1 / idx2)
             break
+    
+    if idx1 is None:
+        print("No suitable idx1 found where relative half-width <= 0.021 after skipping initial points.")
+        return
 
     idx1_adj = idx1 - start_idx
     step_val_at_idx1 = all_steps[idx1_adj]
@@ -271,12 +275,13 @@ def analyze_file(file_path: str):
     
     # idx1, idx2 = 189, 378
     # idx1, idx2 = 193, 378
-    idx2 = 378
+    idx2 = 219
 
     analyze_two_points(df, loss_column, step_column, idx2)
 
 def main():
-    file_path = "/Users/arnavshah/Code/dnaBLT/run_curves/wandb_export_2025-05-28T17_51_03.274-04_00.csv"
+    # file_path = "/Users/arnavshah/Code/dnaBLT/run_curves/wandb_export_2025-05-28T17_51_03.274-04_00.csv"
+    file_path = "/Users/arnavshah/Code/dnaBLT/run_curves/wandb_export_2025-05-28T18_09_04.251-04_00.csv"
     if os.path.exists(file_path):
         analyze_file(file_path)
     else:
