@@ -115,37 +115,62 @@ class PackedBatchDataset(IterableDataset):
     """
 
     def __init__(self, dl_args: DataloaderArgs, dataset_key: str):
+        """
+        Build an iterator constructor once at init.
+
+        • For **training** we immediately materialise the long‑running iterator
+          so its state can be checkpointed.
+
+        • For **validation / test** we keep only the *factory*; a fresh
+          iterator is produced on every call to ``__iter__``.
+        """
         super().__init__()
         self.dl_args = dl_args
         self.dataset_key = dataset_key
+
         worker_info = get_worker_info()
         local_rank = dist.get_rank() if dist.is_initialized() else 0
         world_size = dist.get_world_size() if dist.is_initialized() else 1
-        
-        # Ensure _iterator is created fresh or if it's None
-        self._iterator = self.dl_args.build_from_rank(
+
+        # A closure that knows how to build an iterator for *this* dataset
+        self._build_iterator = lambda: self.dl_args.build_from_rank(
             ddp_rank=local_rank,
             ddp_world_size=world_size,
             worker_id=worker_info.id if worker_info else 0,
             num_workers=worker_info.num_workers if worker_info else 1,
             mode=self.dataset_key,
         )
-    
+
+        # Training keeps a single long‑running iterator; others build on‑demand
+        self._iterator = self._build_iterator() if dataset_key == "train" else None
+
+    # --------------------------------------------------------------------- #
+    # Checkpointing helpers – only meaningful for the training dataloader
+    # --------------------------------------------------------------------- #
     def state_dict(self):
-        if self.dataset_key == "train":
-            return {"i": self._iterator.sequence_iterator.source_to_iterator['16b*']._src_iter.arrow_batch_iterator.current_batch_idx}
-        else:
-            return {"i": self._iterator.sequence_iterator.source_to_iterator['entropies_validation.arrow']._src_iter.arrow_batch_iterator.current_batch_idx}
+        if self.dataset_key != "train":
+            return {}  # No state needed for val/test
+        return {
+            "i": self._iterator.sequence_iterator
+            .source_to_iterator['16b*']._src_iter.arrow_batch_iterator.current_batch_idx
+        }
 
     def load_state_dict(self, state_dict):
-        if self.dataset_key == "train":
-            # Load state for training dataset
-            self._iterator.sequence_iterator.source_to_iterator['16b*']._src_iter.arrow_batch_iterator.current_batch_idx = state_dict["i"]
-        else:
-            self._iterator.sequence_iterator.source_to_iterator['entropies_validation.arrow']._src_iter.arrow_batch_iterator.current_batch_idx = state_dict["i"]
+        if self.dataset_key == "train" and state_dict:
+            self._iterator.sequence_iterator.source_to_iterator[
+                '16b*']._src_iter.arrow_batch_iterator.current_batch_idx = state_dict["i"]
 
+    # --------------------------------------------------------------------- #
+    # Actual iteration
+    # --------------------------------------------------------------------- #
     def __iter__(self):
-        return iter(self._iterator)
+        """
+        Training → re‑use the single iterator.
+        Validation/Test → return a fresh iterator every time.
+        """
+        if self.dataset_key == "train":
+            return iter(self._iterator)
+        return iter(self._build_iterator())
 
 
 
