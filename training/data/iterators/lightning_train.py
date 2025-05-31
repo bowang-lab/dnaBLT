@@ -114,7 +114,7 @@ class PackedBatchDataset(IterableDataset):
     `PackingIterator`, so no extra collation is required.
     """
 
-    def __init__(self, dl_args: DataloaderArgs, dataset_key: str):
+    def __init__(self, dl_args: DataloaderArgs, dataset_key: str, shuffle: bool = False):
         """
         Build an iterator constructor once at init.
 
@@ -127,6 +127,7 @@ class PackedBatchDataset(IterableDataset):
         super().__init__()
         self.dl_args = dl_args
         self.dataset_key = dataset_key
+        self.shuffle = shuffle
 
         worker_info = get_worker_info()
         local_rank = dist.get_rank() if dist.is_initialized() else 0
@@ -139,6 +140,7 @@ class PackedBatchDataset(IterableDataset):
             worker_id=worker_info.id if worker_info else 0,
             num_workers=worker_info.num_workers if worker_info else 1,
             mode=self.dataset_key,
+            shuffle=self.shuffle,
         )
 
         # Training keeps a single long‑running iterator; others build on‑demand

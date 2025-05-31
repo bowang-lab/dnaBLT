@@ -170,3 +170,4 @@ internal/
 .hf_cache
 jobs_parallel-copy/
 wandb/
+*.ckpt

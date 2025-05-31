@@ -91,6 +91,7 @@ def distribute_data_to_rank(
     file_format: str,
     s3_profile: str | None = None,
     file_pattern: str = TRAIN_DATA_FILE_PATTERN,
+    shuffle: bool = False,
 ) -> ArrowFileIterator:
     """
     Build an `ArrowFileIterator` that is aware of the global DDP rank.
@@ -129,6 +130,7 @@ def distribute_data_to_rank(
         dataset_files=dataset_chunks,
         entropy_model_name=entropy_model_name,
         arrow_batch_size=arrow_batch_size,
+        shuffle=shuffle
     )
 
 
@@ -183,7 +185,7 @@ class DataloaderArgs(BaseModel):
     patcher_args: PatcherArgs = PatcherArgs()
 
     def _create_sequence_iterators(
-        self, ddp_rank: int, ddp_world_size: int, worker_id: int, num_workers: int, mode: str = "train"
+        self, ddp_rank: int, ddp_world_size: int, worker_id: int, num_workers: int, mode: str = "train", shuffle=False,
     ) -> dict[str, SequenceIterator]:
         source_to_sequence_iterator: dict[str, SequenceIterator] = {}
         for dataset_path in self.sources[mode]:
@@ -200,6 +202,7 @@ class DataloaderArgs(BaseModel):
                 worker_id=worker_id,
                 num_workers=num_workers,
                 s3_profile=self.s3_profile,
+                shuffle=shuffle,
             )
             looping_iterator = arrow_iterator
             preprocess_iterator = PreprocessIterator(
@@ -218,9 +221,9 @@ class DataloaderArgs(BaseModel):
         return source_to_sequence_iterator
 
     def build_from_rank(
-        self, ddp_rank: int, ddp_world_size: int, worker_id: int, num_workers: int, mode: str = "train"
+        self, ddp_rank: int, ddp_world_size: int, worker_id: int, num_workers: int, mode: str = "train", shuffle=False
     ):
-        source_to_sequence_iterators = self._create_sequence_iterators(ddp_rank, ddp_world_size, worker_id, num_workers, mode)
+        source_to_sequence_iterators = self._create_sequence_iterators(ddp_rank, ddp_world_size, worker_id, num_workers, mode, shuffle)
         weight_rng_state = get_rng_state(self.seed + 1, worker_id, num_workers)
         sampling_iterator = SamplingIterator(
             rng_state=weight_rng_state,
