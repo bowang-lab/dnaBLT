@@ -347,7 +347,7 @@ def train(args: TrainArgs, num_gpus):
     model = ByteLatentLightningModule(args)
 
     # Use test_mode parameter
-    data_module = ByteLatentDataModule(args.data)
+    data_module = ByteLatentDataModule(args)
 
     # Set up Weights & Biases logger
     wandb_logger = WandbLogger(project="byte-latent")
