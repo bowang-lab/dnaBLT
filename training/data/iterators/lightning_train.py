@@ -1,13 +1,11 @@
 import random
 import gc
 from typing import Any, Union, Dict
-import os
 import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.distributed as dist
 from torch.utils.data import IterableDataset, get_worker_info, DataLoader
-from torchdata.stateful_dataloader import StatefulDataLoader
 
 from pytorch_lightning.loggers import WandbLogger
 
@@ -31,41 +29,6 @@ from blt import ByteLatentTransformerArgs
 ###############################################
 # Helper Functions
 ###############################################
-
-class StatefulDataloaderCheckpoint(pl.Callback):
-    """
-    Gather the StatefulDataLoader.state_dict from each rank and save
-    a dictionary {rank: state_dict} inside the checkpoint.
-    """
-    def on_save_checkpoint(self, trainer, pl_module, checkpoint):
-        """
-        Save a full `StatefulDataLoader.state_dict()` for every rank so that the
-        training job can be resumed bit‑for‑bit.  We use
-        ``torch.distributed.all_gather_object`` to collect the state dictionaries
-        from all ranks onto rank 0 and then stash them under the
-        ``"dataloader_state"`` key in the checkpoint.
-        """
-        # Full state for *this* rank’s DataLoader
-        local_state = trainer.datamodule.train_dataloader().state_dict()
-
-        if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
-            # Gather the dictionaries onto rank 0
-            world_size = dist.get_world_size()
-            gathered_states = [None] * world_size
-            dist.all_gather_object(gathered_states, local_state)
-
-            if trainer.global_rank == 0:
-                checkpoint["dataloader_state"] = {
-                    rank: state for rank, state in enumerate(gathered_states)
-                }
-        else:
-            # Single‑process training – just save our own state.
-            checkpoint["dataloader_state"] = {0: local_state}
-
-    def on_load_checkpoint(self, trainer, pl_module, checkpoint):
-        rank_state = checkpoint.get("dataloader_state", {}).get(trainer.global_rank)
-        if rank_state is not None:
-            trainer.datamodule._loaded_train_dataloader_state = rank_state
 
 
 def flatten_dict(d: Dict, parent_key: str = "", sep: str = "_") -> Dict:
@@ -114,7 +77,9 @@ class PackedBatchDataset(IterableDataset):
     `PackingIterator`, so no extra collation is required.
     """
 
-    def __init__(self, dl_args: DataloaderArgs, dataset_key: str, shuffle: bool = False):
+    def __init__(
+        self, dl_args: DataloaderArgs, dataset_key: str, shuffle: bool = False
+    ):
         """
         Build an iterator constructor once at init.
 
@@ -129,39 +94,29 @@ class PackedBatchDataset(IterableDataset):
         self.dataset_key = dataset_key
         self.shuffle = shuffle
 
-        worker_info = get_worker_info()
-        local_rank = dist.get_rank() if dist.is_initialized() else 0
-        world_size = dist.get_world_size() if dist.is_initialized() else 1
+    def _make_iterator_for_worker(self):
+        winfo = get_worker_info()  # None when num_workers = 0
+        local_worker_id = 0 if winfo is None else winfo.id
+        local_num_workers = 1 if winfo is None else winfo.num_workers
 
-        # A closure that knows how to build an iterator for *this* dataset
-        self._build_iterator = lambda: self.dl_args.build_from_rank(
-            ddp_rank=local_rank,
-            ddp_world_size=world_size,
-            worker_id=worker_info.id if worker_info else 0,
-            num_workers=worker_info.num_workers if worker_info else 1,
-            mode=self.dataset_key,
-            shuffle=self.shuffle,
+        if torch.distributed.is_initialized():
+            ddp_rank       = torch.distributed.get_rank()        # 0‥world-1
+            ddp_world_size = torch.distributed.get_world_size()  # world
+        else:                       # single-GPU / CPU debug runs
+            ddp_rank, ddp_world_size = 0, 1
+
+        # “Global” worker ids that cover *all* DDP ranks × DataLoader workers. Injective function.
+        # global_worker_id = ddp_rank * local_num_workers + local_worker_id
+        # global_num_workers = ddp_world_size * local_num_workers
+
+        return self.dl_args.build_from_rank(
+            ddp_rank=ddp_rank,
+            ddp_world_size=ddp_world_size,
+            worker_id=local_worker_id,
+            num_workers=local_num_workers,
+            mode=self.dataset_key,  # "train" / "validation"
+            shuffle=self.shuffle,  # Shuffle for training, no shuffle for validation
         )
-
-        # Training keeps a single long‑running iterator; others build on‑demand
-        self._iterator = self._build_iterator() if dataset_key == "train" else None
-
-    # --------------------------------------------------------------------- #
-    # Checkpointing helpers – only meaningful for the training dataloader
-    # --------------------------------------------------------------------- #
-    def state_dict(self):
-        if self.dataset_key != "train":
-            return {}  # No state needed for val/test
-        return {
-            "i": self._iterator.sequence_iterator
-            .source_to_iterator['16b*']._src_iter.arrow_batch_iterator.current_batch_idx
-        }
-
-    def load_state_dict(self, state_dict):
-        if self.dataset_key == "train" and state_dict:
-            self._iterator.sequence_iterator.source_to_iterator[
-                '16b*']._src_iter.arrow_batch_iterator.current_batch_idx = state_dict["i"]
-
     # --------------------------------------------------------------------- #
     # Actual iteration
     # --------------------------------------------------------------------- #
@@ -170,10 +125,32 @@ class PackedBatchDataset(IterableDataset):
         Training → re‑use the single iterator.
         Validation/Test → return a fresh iterator every time.
         """
-        if self.dataset_key == "train":
-            return iter(self._iterator)
-        return iter(self._build_iterator())
+        return iter(self._make_iterator_for_worker())
 
+def build_dataloader(
+    dl_args: DataloaderArgs,
+    mode: str = "train",
+    num_workers: int = 0,
+    pin_memory: bool = True,
+    shuffle: bool = False,
+):
+    """
+    Returns a torch.utils.data.DataLoader whose `dataset` streams the same
+    `Batch` objects you used to obtain from directly looping over
+    `args.build_from_rank(...)`.
+    • `batch_size` **must** stay `None` because the dataset already
+      emits *batched* samples.
+    • No `collate_fn` is needed: each iterator element is forwarded
+      unchanged.
+    """
+    dataset = PackedBatchDataset(dl_args, mode, shuffle)
+    return DataLoader(
+        dataset,
+        batch_size=None,  # one Batch per iteration
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=num_workers > 0,
+    )
 
 
 def to_device_async(batch, device):
@@ -328,48 +305,26 @@ class ByteLatentLightningModule(pl.LightningModule):
 # DataModule and Iterator Wrapper (No IterableDataset)
 ###############################################
 class ByteLatentDataModule(pl.LightningDataModule):
-    def __init__(self, dl_args: DataloaderArgs):
+    def __init__(self, args: TrainArgs):
         super().__init__()
-        self.dl_args = dl_args
-        
-        self.train_dataset: PackedBatchDataset | None = None
-        self.val_dataset: PackedBatchDataset | None = None
-        
-        self._train_dataloader_instance: StatefulDataLoader | None = None
-        self._val_dataloader_instance: StatefulDataLoader | None = None
-        
-        self._loaded_train_dataloader_state = None
+        self.args = args
+        self.data_loader = None
 
-    def setup(self, stage: str | None = None):
-        # setup is called before train_dataloader, val_dataloader, etc.
-        # We create datasets here. DataLoaders are created on-demand by their respective methods.
-        self.train_dataset = PackedBatchDataset(self.dl_args, dataset_key="train")
-        self.val_dataset = PackedBatchDataset(self.dl_args, dataset_key="validation")
+    def setup(self, stage=None):
+        self.train_data_loader = build_dataloader(self.args.data, mode="train", num_workers=4, pin_memory=True) # shuffle optional
+        self.val_data_loader = build_dataloader(self.args.data, mode="validation", num_workers=4, pin_memory=True) # shuffle optional
 
-    def train_dataloader(self) -> StatefulDataLoader:
-        if self._train_dataloader_instance is None:
-            self._train_dataloader_instance = StatefulDataLoader(
-                self.train_dataset,
-                batch_size=None,  # Dataset yields pre-formed batches
-                num_workers=4, 
-                pin_memory=True,
-                persistent_workers=True # Crucial for stateful iteration
-            )
-            if self._loaded_train_dataloader_state is not None:
-                self._train_dataloader_instance.load_state_dict(self._loaded_train_dataloader_state)
-                self._loaded_train_dataloader_state = None # Clear after applying
-        return self._train_dataloader_instance
+    def train_dataloader(self):
+        return self.train_data_loader
 
-    def val_dataloader(self) -> StatefulDataLoader:
-        if self._val_dataloader_instance is None:
-            self._val_dataloader_instance = StatefulDataLoader(
-                self.val_dataset,
-                batch_size=None,
-                num_workers=4,
-                pin_memory=True,
-                persistent_workers=True
-            )
-        return self._val_dataloader_instance
+    def val_dataloader(self):
+        return self.val_data_loader
+
+    def transfer_batch_to_device(self, batch, device, dataloader_idx):
+        """
+        Override LightningModule to move all batch elements to the correct device.
+        """
+        return batch
 
     # transfer_batch_to_device remains the same
 
@@ -410,7 +365,7 @@ def train(args: TrainArgs, num_gpus):
         strategy="ddp",
         accelerator="auto",
         devices=num_gpus,
-        callbacks=[checkpoint_callback, StatefulDataloaderCheckpoint()],
+        callbacks=checkpoint_callback,
         gradient_clip_val=None,  # must be none for fused adam
         accumulate_grad_batches=args.grad_acc_steps,
         precision="bf16-mixed",
@@ -455,9 +410,9 @@ if __name__ == "__main__":
     parser.add_argument("--num_gpus", type=int, default=1, help="Number of GPUs")
     args = parser.parse_args()
 
-    grad_accum_size = 2 ** 21 // (args.batch_size * 8192 * args.num_gpus)
+    grad_accum_size = 2**21 // (args.batch_size * 8192 * args.num_gpus)
 
-    steps = int(args.tokens) // (2 ** 21)
+    steps = int(args.tokens) // (2**21)
     seq_len = 8192 // args.patch_size
 
     if args.patch_size == 2:

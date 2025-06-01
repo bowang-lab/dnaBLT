@@ -118,11 +118,11 @@ class ArrowFileIterator:
         
         # Initialize RNG for shuffling if needed
         self.current_batch_idx = 0
+        self.batch_indices = list(range(self.worker_id, self.reader.num_record_batches, self.num_workers))
         if self.shuffle:
             # Create a unique RNG for this worker to ensure deterministic shuffling
             self.rng = random.Random(self.seed + self.rank * 1000 + self.worker_id)
             # Pre-compute all batch indices for this worker
-            self.batch_indices = list(range(self.worker_id, self.reader.num_record_batches, self.num_workers))
             self.rng.shuffle(self.batch_indices)
 
     def _initialize_dataset_files(self, file_path, dataset_files, file_format):
@@ -182,16 +182,9 @@ class ArrowFileIterator:
             self.batch_to_consume = None
             self.current_row_in_batch = 0
         
-        if self.shuffle:
-            # Use pre-shuffled batch indices for this worker
-            for batch_idx in self.batch_indices[self.current_batch_idx:]:
-                self.current_batch_idx += 1
-                yield self.reader.get_batch(batch_idx)
-        else:
-            # Original behavior: each worker gets every num_workers-th batch
-            for rg in range(self.worker_id, self.reader.num_record_batches, self.num_workers):
-                self.current_batch_idx += 1
-                yield self.reader.get_batch(rg)
+        for batch_idx in self.batch_indices[self.current_batch_idx:]:
+            self.current_batch_idx += 1
+            yield self.reader.get_batch(batch_idx)
 
             # --- Tokenization (
 

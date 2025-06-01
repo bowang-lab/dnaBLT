@@ -8,6 +8,7 @@ import plotly.graph_objects as go
 import plotly.io as pio
 
 from training.data.iterators.lightning_train import (
+    
     PackedBatchDataset,
     compute_loss,
     to_device_async,
@@ -20,9 +21,46 @@ from training.data.iterators.v_args import DataloaderArgs, TrainArgs
 def run_experiment(checkpoint_path, shuffle, device):
     # Load training arguments
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    train_args = checkpoint["hyper_parameters"] if "hyper_parameters" in checkpoint else checkpoint["args"]
-    if isinstance(train_args, dict):
-        train_args = TrainArgs(**train_args)
+    state_dict = checkpoint["state_dict"]
+    if any(k.startswith("model.") for k in state_dict.keys()):
+        state_dict = {k.replace("model.", "", 1): v for k, v in state_dict.items()}
+    tokens = 36000000000
+    batch_size = 32
+    num_gpus = 1
+
+    grad_accum_size = 2 ** 21 // (batch_size * 8192 * num_gpus)
+
+    steps = int(tokens) // (2 ** 21)
+    seq_len = 8192 // 2
+
+    threshold = 1.1
+    max_patch_length = 250
+    train_args = TrainArgs(
+        grad_acc_steps=grad_accum_size,
+        steps=steps,
+        max_steps=steps,
+        data=DataloaderArgs(
+            batch_size=batch_size,
+            patcher_args={
+                "threshold": threshold,
+                "max_patch_length": max_patch_length,
+            },
+            seq_len=seq_len,
+            buffer_size=batch_size,
+        ),
+        model={
+            "dim_global": 448,
+            "dim_local_decoder": 256,
+            "dim_local_encoder": 256,
+            "n_layers_global": 7,
+            "n_layers_local_decoder": 2,
+            "n_heads_global": 448 // 64,
+            "n_heads_local_decoder": 256 // 64,
+            "n_heads_local_encoder": 256 // 64,
+            "cross_attn_nheads": 256 // 64,
+            "max_seqlen": seq_len,
+        },
+    )
 
     # Build datamodule with custom shuffle
     train_args.data.sources = {"train": {"16b[34].arrow": 1}, "validation": {"entropies_validation.arrow": 1}}
@@ -33,7 +71,7 @@ def run_experiment(checkpoint_path, shuffle, device):
     model = ByteLatentTransformer(train_args.model)
     model.to(device)
     model.eval()
-    model.load_state_dict(checkpoint["state_dict"])
+    model.load_state_dict(state_dict)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.0001)
 
