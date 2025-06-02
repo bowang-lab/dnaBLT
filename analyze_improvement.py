@@ -136,12 +136,13 @@ def analyze_two_points(df: pd.DataFrame, loss_column: str, step_column: str, idx
         pred, rel_hw = tracker.update(step, loss)
         if step > all_steps[-1] * 0.1 and rel_hw <= 0.021:
             idx1 = np.where(all_steps == step)[0][0] + start_idx
-            print(idx1 / idx2)
-            break
+            # print(f"{idx1 / idx2} -> {rel_hw:.3f}")
+            # break
     
     if idx1 is None:
         print("No suitable idx1 found where relative half-width <= 0.021 after skipping initial points.")
-        return
+        print(f"Most recent rel_hw: {rel_hw} at step {step:.2f}")
+        idx1 = np.where(all_steps == step)[0][0] + start_idx
 
     idx1_adj = idx1 - start_idx
     step_val_at_idx1 = all_steps[idx1_adj]
@@ -261,8 +262,7 @@ def analyze_file(file_path: str):
     df = load_wandb_csv(file_path)
     
     # Find relevant columns (handle different possible column names)
-    possible_loss_columns = ['restful-jazz-47 - val_entropy_loss', 'restful-flower-48 - val_entropy_loss']
-    loss_column = next((col for col in possible_loss_columns if col in df.columns), None)
+    loss_column = next((col for col in df.columns if col.endswith("val_entropy_loss")), None)
     
     if loss_column is None:
         print(f"Could not find loss column in {file_path}. Available columns: {df.columns.tolist()}")
@@ -275,13 +275,13 @@ def analyze_file(file_path: str):
     
     # idx1, idx2 = 189, 378
     # idx1, idx2 = 193, 378
-    idx2 = 219
+    idx2 = 338
 
-    analyze_two_points(df, loss_column, step_column, idx2)
+    analyze_two_points(df, loss_column, step_column, idx2, min_points_skip=1)
 
 def main():
-    # file_path = "/Users/arnavshah/Code/dnaBLT/run_curves/wandb_export_2025-05-28T17_51_03.274-04_00.csv"
-    file_path = "/Users/arnavshah/Code/dnaBLT/run_curves/wandb_export_2025-05-28T18_09_04.251-04_00.csv"
+    # file_path = "/Users/arnavshah/Code/dnaBLT/run_curves/wandb_export_2025-06-01T17_41_09.741-04_00.csv"
+    file_path = "/Users/arnavshah/Code/dnaBLT/run_curves/wandb_export_2025-06-01T17_41_00.613-04_00.csv"
     if os.path.exists(file_path):
         analyze_file(file_path)
     else:

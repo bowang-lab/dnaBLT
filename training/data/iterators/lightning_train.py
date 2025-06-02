@@ -1,6 +1,7 @@
 import random
 import gc
 from typing import Any, Union, Dict
+import os
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -99,21 +100,16 @@ class PackedBatchDataset(IterableDataset):
         local_worker_id = 0 if winfo is None else winfo.id
         local_num_workers = 1 if winfo is None else winfo.num_workers
 
-        if torch.distributed.is_initialized():
-            ddp_rank       = torch.distributed.get_rank()        # 0‥world-1
-            ddp_world_size = torch.distributed.get_world_size()  # world
-        else:                       # single-GPU / CPU debug runs
-            ddp_rank, ddp_world_size = 0, 1
+        ddp_rank = int(os.environ.get("RANK", 0))
+        ddp_world_size = int(os.environ.get("WORLD_SIZE", 1))
 
         # “Global” worker ids that cover *all* DDP ranks × DataLoader workers. Injective function.
-        # global_worker_id = ddp_rank * local_num_workers + local_worker_id
-        # global_num_workers = ddp_world_size * local_num_workers
+        global_worker_id = ddp_rank * local_num_workers + local_worker_id
+        global_num_workers = ddp_world_size * local_num_workers
 
         return self.dl_args.build_from_rank(
-            ddp_rank=ddp_rank,
-            ddp_world_size=ddp_world_size,
-            worker_id=local_worker_id,
-            num_workers=local_num_workers,
+            worker_id=global_worker_id,
+            num_workers=global_num_workers,
             mode=self.dataset_key,  # "train" / "validation"
             shuffle=self.shuffle,  # Shuffle for training, no shuffle for validation
         )
@@ -122,10 +118,26 @@ class PackedBatchDataset(IterableDataset):
     # --------------------------------------------------------------------- #
     def __iter__(self):
         """
-        Training → re‑use the single iterator.
-        Validation/Test → return a fresh iterator every time.
+        Training  → keep yielding batches forever so that every DDP rank
+        stays in lock‑step.  When the underlying iterator is exhausted we
+        simply create a new one, effectively starting the next epoch
+        without ever raising StopIteration on the training ranks.
+
+        Validation/Test → keep the original single‑pass behaviour.
         """
-        return iter(self._make_iterator_for_worker())
+        # Finite pass for validation / test
+        if self.dataset_key != "train":
+            return iter(self._make_iterator_for_worker())
+
+        # Infinite stream for training
+        worker_iter = iter(self._make_iterator_for_worker())
+        while True:
+            try:
+                yield next(worker_iter)
+            except StopIteration:
+                # Iterator exhausted – start a new epoch
+                print("==TRAIN ITERATOR EXHAUSTED, RESTARTING==")
+                worker_iter = self._make_iterator_for_worker()
 
 def build_dataloader(
     dl_args: DataloaderArgs,
@@ -311,7 +323,13 @@ class ByteLatentDataModule(pl.LightningDataModule):
         self.data_loader = None
 
     def setup(self, stage=None):
-        self.train_data_loader = build_dataloader(self.args.data, mode="train", num_workers=4, pin_memory=True) # shuffle optional
+        self.train_data_loader = build_dataloader(
+            self.args.data,
+            mode="train",
+            num_workers=4,
+            pin_memory=True,
+            shuffle=True,       # shuffle each (infinite) epoch
+        )
         self.val_data_loader = build_dataloader(self.args.data, mode="validation", num_workers=4, pin_memory=True) # shuffle optional
 
     def train_dataloader(self):

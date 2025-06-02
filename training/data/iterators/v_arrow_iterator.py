@@ -57,16 +57,22 @@ def shard_sort_key(file: str):
     return int(match.group(1))
 
 
-def _select_shard_file(dataset_files: list[str], index: int, modulo: int) -> list[str]:
+def _gather_all_shards(dataset_files: list[str], index: int, modulo: int) -> list[str]:
     """
     Deterministically assign a disjoint subset of `dataset_files` to the
     **rank** identified by `index`, assuming `modulo` total ranks.
     """
-    if modulo == 1:
-        return dataset_files[0]
-    for idx, f in enumerate(dataset_files):
-        if idx % modulo == index:
-            return f
+    my_batches = []
+    reader_cache = {}
+    global_batch_idx = 0
+    for path in dataset_files:
+        reader = pa.ipc.open_file(path)
+        reader_cache[path] = reader  # Cache the reader to avoid reopening
+        for i in range(reader.num_record_batches):
+            if global_batch_idx % modulo == index:
+                my_batches.append((path, i))
+            global_batch_idx += 1
+    return my_batches, reader_cache
 
 
 def maybe_truncate_string(text: str, max_length: int):
@@ -78,7 +84,6 @@ class ArrowFileIterator:
         self,
         *,
         file_path: Optional[str] = None,
-        ddp_rank: int = 0, ddp_world: int = 1,
         worker_id: int = 0,
         num_workers: int = 1,
         preprocess_dir: Optional[str] = None,
@@ -90,8 +95,6 @@ class ArrowFileIterator:
         seed: int = 42,
     ):
         assert 0 <= worker_id < num_workers, (worker_id, num_workers)
-        self.rank = ddp_rank
-        self.world_size = ddp_world
         if file_path is None and dataset_files is None:
             raise ByteLatentError("file_path and dataset_files cannot both be None")
 
@@ -113,17 +116,15 @@ class ArrowFileIterator:
         self.dataset_files = self._initialize_dataset_files(file_path, dataset_files, file_format)
 
         # Split files across ranks (DDP processes), not DataLoader workers
-        self.shard_file = _select_shard_file(self.dataset_files, self.rank, self.world_size)
-        self.reader = pa.ipc.open_file(self.shard_file)
-        
-        # Initialize RNG for shuffling if needed
+        self.batches, self.reader_cache = _gather_all_shards(self.dataset_files, self.worker_id, self.num_workers)
+        # print(f"Worker {self.worker_id}:", self.batches[:5], "...", len(self.batches), "batches total")
         self.current_batch_idx = 0
-        self.batch_indices = list(range(self.worker_id, self.reader.num_record_batches, self.num_workers))
+        # Initialize RNG for shuffling if needed
         if self.shuffle:
             # Create a unique RNG for this worker to ensure deterministic shuffling
-            self.rng = random.Random(self.seed + self.rank * 1000 + self.worker_id)
+            rng = random.Random(self.seed + self.worker_id)
             # Pre-compute all batch indices for this worker
-            self.rng.shuffle(self.batch_indices)
+            rng.shuffle(self.batches)
 
     def _initialize_dataset_files(self, file_path, dataset_files, file_format):
         if dataset_files is not None:
@@ -139,103 +140,9 @@ class ArrowFileIterator:
                 key=shard_sort_key,
             )
 
-    def get_state(self):
-        return {
-            "file_path": self.file_path,
-            "row_num": self.row_num,
-            "worker_id": self.worker_id,
-            "num_workers": self.num_workers,
-            "preprocess_dir": self.preprocess_dir,
-            "entropy_model_name": self.entropy_model_name,
-            "arrow_batch_size": self.arrow_batch_size,
-            "dataset_files": self.dataset_files,
-            "file_format": self.file_format,
-            "shuffle": self.shuffle,
-            "seed": self.seed,
-            "rank": self.rank,
-            "world_size": self.world_size,
-        }
-
-    @classmethod
-    def from_state(cls, state):
-        iterator = cls(
-            file_path=state["file_path"],
-            rank=state.get("rank", 0),
-            world_size=state.get("world_size", 1),
-            worker_id=state["worker_id"],
-            num_workers=state["num_workers"],
-            preprocess_dir=state["preprocess_dir"],
-            entropy_model_name=state["entropy_model_name"],
-            arrow_batch_size=state["arrow_batch_size"],
-            dataset_files=state["dataset_files"],
-            file_format=state["file_format"],
-            shuffle=state.get("shuffle", False),
-            seed=state.get("seed", 42),
-        )
-        if state["row_num"] != 0:
-            iterator.set_position(state["row_num"])
-        return iterator
-
     def create_iter(self) -> Generator[BltExample, Any, None]:
-        if self.batch_to_consume is not None:
-            yield self.batch_to_consume
-            self.batch_to_consume = None
-            self.current_row_in_batch = 0
-        
-        for batch_idx in self.batch_indices[self.current_batch_idx:]:
-            self.current_batch_idx += 1
-            yield self.reader.get_batch(batch_idx)
-
-            # --- Tokenization (
-
-    def set_position(self, target_row_num: int):
-        # Not implemented for shuffle mode as it would break the shuffle order
-        if self.shuffle:
-            raise NotImplementedError("set_position is not supported when shuffle=True")
-            
-        data_str = maybe_truncate_string(str(self.shard_files), 200)
-        logger.info(f"Setting arrow position to {target_row_num} for {data_str}")
-
-        if target_row_num == 0:
-            self.row_num = 0
-            self.dataset = None
-            self.batch_iterator = None
-            self.batch_to_consume = None
-            return
-
-        self.dataset = pa.dataset.dataset(
-            self.shard_files, format=self.file_format
-        )
-        self.batch_iterator = self.dataset.to_batches(batch_size=self.arrow_batch_size)
-
-        curr_remaining = target_row_num
-        for batch in self.batch_iterator:
-            if len(batch) > curr_remaining:
-                batch_columns = batch.to_pydict()
-                if self.file_format == "arrow":
-                    leftover_sample_ids = batch_columns["sample_id"][curr_remaining:]
-                    leftover_entropies = batch_columns["entropies"][curr_remaining:]
-                    leftover_texts = batch_columns["text"][curr_remaining:]
-                elif self.file_format == "json":
-                    leftover_sample_ids = batch_columns[get_id_key(batch_columns)][curr_remaining:]
-                    leftover_entropies = None
-                    leftover_texts = get_text(batch_columns)[curr_remaining:]
-                else:
-                    raise ValueError(f"Unknown file format: {self.file_format}")
-
-                self.batch_to_consume = {
-                    "sample_id": leftover_sample_ids,
-                    "entropies": leftover_entropies,
-                    "text": leftover_texts
-                }
-                break
-            elif len(batch) == curr_remaining:
-                break
-            else:
-                curr_remaining -= len(batch)
-
-        self.row_num = target_row_num
-        logger.info(f"Finished setting arrow position to {target_row_num} for {data_str}")
+        for path, i in self.batches[self.current_batch_idx:]:
+            yield self.reader_cache[path].get_batch(i)
 
     def __iter__(self):
         return self.create_iter()

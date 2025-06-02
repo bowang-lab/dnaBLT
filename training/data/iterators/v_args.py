@@ -55,7 +55,6 @@ def get_fs(path: str, s3_profile: str | None = None) -> fsspec.AbstractFileSyste
 
 def find_and_sanitize_chunks(
     dataset_path: str,
-    world_size: int,
     file_pattern: str,
     s3_profile: str | None = None,
 ):
@@ -63,14 +62,6 @@ def find_and_sanitize_chunks(
     path_with_glob = os.path.join(dataset_path, file_pattern)
     dataset_chunks = fs.glob(path_with_glob)
     n_chunks = len(dataset_chunks)
-
-    if n_chunks > world_size:
-        n_discard = n_chunks - world_size
-        dataset_chunks = dataset_chunks[:world_size]
-    else:
-        assert (
-            world_size % n_chunks == 0
-        ), "World size should be a multiple of number of chunks"
 
     assert n_chunks > 0, f"No valid chunks in {dataset_path}"
 
@@ -84,8 +75,6 @@ def distribute_data_to_rank(
     preprocess_dir: str,
     entropy_model_name: str | None,
     arrow_batch_size: int,
-    ddp_rank: int,
-    ddp_world_size: int,
     worker_id: int,
     num_workers: int,
     file_format: str,
@@ -105,25 +94,12 @@ def distribute_data_to_rank(
       the empty‑shard error raised inside `ArrowFileIterator`.
     """
     dataset_chunks = find_and_sanitize_chunks(
-        dataset_path, ddp_world_size, entropy_files, s3_profile=s3_profile
+        dataset_path, entropy_files, s3_profile=s3_profile
     )
-
-    # Ensure there are at least as many shards as ranks; replicate if needed.
-    # HACK:
-    # files_per_rank = math.ceil(len(dataset_files) / ddp_world)
-    # start = ddp_rank * files_per_rank
-    # end   = start + files_per_rank
-    # selected_files = dataset_files[start:end]
-
-    if len(dataset_chunks) < ddp_world_size:
-        reps = math.ceil(ddp_world_size / len(dataset_chunks))
-        dataset_chunks = (dataset_chunks * reps)[:ddp_world_size]
 
     return ArrowFileIterator(
         file_path=None,
         file_format=file_format,
-        ddp_rank=ddp_rank,          # global DDP rank
-        ddp_world=ddp_world_size,  # global DDP world size
         worker_id=worker_id,        # local DDP rank
         num_workers=num_workers,  # total ranks
         preprocess_dir=preprocess_dir,
@@ -185,7 +161,7 @@ class DataloaderArgs(BaseModel):
     patcher_args: PatcherArgs = PatcherArgs()
 
     def _create_sequence_iterators(
-        self, ddp_rank: int, ddp_world_size: int, worker_id: int, num_workers: int, mode: str = "train", shuffle=False,
+        self, worker_id: int, num_workers: int, mode: str = "train", shuffle=False,
     ) -> dict[str, SequenceIterator]:
         source_to_sequence_iterator: dict[str, SequenceIterator] = {}
         for dataset_path in self.sources[mode]:
@@ -197,8 +173,6 @@ class DataloaderArgs(BaseModel):
                 preprocess_dir=self.preprocess_dir,
                 entropy_model_name=self.entropy_model_name,
                 arrow_batch_size=self.arrow_batch_size,
-                ddp_rank=ddp_rank,
-                ddp_world_size=ddp_world_size,
                 worker_id=worker_id,
                 num_workers=num_workers,
                 s3_profile=self.s3_profile,
@@ -221,9 +195,9 @@ class DataloaderArgs(BaseModel):
         return source_to_sequence_iterator
 
     def build_from_rank(
-        self, ddp_rank: int, ddp_world_size: int, worker_id: int, num_workers: int, mode: str = "train", shuffle=False
+        self, worker_id: int, num_workers: int, mode: str = "train", shuffle=False
     ):
-        source_to_sequence_iterators = self._create_sequence_iterators(ddp_rank, ddp_world_size, worker_id, num_workers, mode, shuffle)
+        source_to_sequence_iterators = self._create_sequence_iterators(worker_id, num_workers, mode, shuffle)
         weight_rng_state = get_rng_state(self.seed + 1, worker_id, num_workers)
         sampling_iterator = SamplingIterator(
             rng_state=weight_rng_state,
