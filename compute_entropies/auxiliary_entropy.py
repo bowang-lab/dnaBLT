@@ -63,6 +63,7 @@ class LengthAwareDistributedBatchSampler(Sampler):
         shuffle=False,
         seed=42,
         segment_size=None,
+        skip_segments=0,
     ):
         # NOTE: This should just return the indices of the segments. We'll need to define them all and then split them into batches and allocate to ranks.
 
@@ -83,6 +84,7 @@ class LengthAwareDistributedBatchSampler(Sampler):
         self.shuffle = shuffle
         self.seed = seed
         self.segment_size = segment_size
+        self.skip_segments = skip_segments
 
         self.segments_per_doc = []
 
@@ -105,16 +107,20 @@ class LengthAwareDistributedBatchSampler(Sampler):
                 self.segments_per_doc.append((i, start, end))
 
         self.total_segments = len(self.segments_per_doc)
+        self.effective_total_segments = max(0, self.total_segments - self.skip_segments)
 
     def __iter__(self):
         # 1. Sort indices by sequence length.
         self.segments_per_doc.sort(key=lambda tup: tup[2], reverse=True)
 
-        batches = [
-            self.segments_per_doc[i : min(i + self.batch_size, self.total_segments)]
-            for i in range(0, self.total_segments, self.batch_size)
-        ]
+        # Remove segments that were processed in a previous run
+        segments = self.segments_per_doc[self.skip_segments:]
+        total_segments = len(segments)
 
+        batches = [
+            segments[i : min(i + self.batch_size, total_segments)]
+            for i in range(0, total_segments, self.batch_size)
+        ]
         total_batches = len(batches)
         base_batches = total_batches // self.num_replicas
         even_count = base_batches * self.num_replicas
@@ -130,7 +136,7 @@ class LengthAwareDistributedBatchSampler(Sampler):
         yield from self.batches_for_rank
 
     def __len__(self):
-        num_batches = ceil(self.total_segments / self.batch_size)
+        num_batches = ceil(self.effective_total_segments / self.batch_size)
         base_batches = num_batches // self.num_replicas
         return base_batches + (num_batches - base_batches if self.rank == 0 else 0)
 
@@ -208,7 +214,11 @@ def init_distributed_training(
     os.environ["MASTER_PORT"] = str(master_port)
 
     # Set GPU device
-    torch.cuda.set_device(rank % gpu_per_node)
+    if torch.cuda.is_available():
+        torch.cuda.set_device(rank % gpu_per_node)
+        device = torch.device("cuda", rank % gpu_per_node)
+    else:
+        device = torch.device("cpu")
 
     # Initialize the process group
     dist.init_process_group(backend=backend, rank=rank, world_size=world_size)
@@ -219,8 +229,35 @@ def init_distributed_training(
     # Message indicating the process has passed the barrier
     print(f"Process {rank} passed barrier")
     hf_data = load_dataset(f"{data_path}/stage1", split=split).with_format("torch")
+    # ---------------------------------------------------------
+    # Count how many segments have already been processed
+    # across all previously saved rank files so we can
+    # resume even if the number of ranks has changed.
+    # ---------------------------------------------------------
+    processed_segments = 0
+    if rank == 0:
+        import glob
+
+        for afile in glob.glob("16b*.arrow"):
+            try:
+                with pa.memory_map(afile, "r") as src:
+                    reader = pa.ipc.open_file(src)
+                    for i in range(reader.num_record_batches):
+                        processed_segments += reader.get_record_batch(i).num_rows
+            except Exception as e:
+                print(f"Rank 0: Could not read {afile}: {e}")
+
+    processed_segments_tensor = torch.tensor([processed_segments], dtype=torch.long, device=device)
+    dist.broadcast(processed_segments_tensor, src=0)
+    processed_segments = processed_segments_tensor.item()
+
     dist_sampler = LengthAwareDistributedBatchSampler(
-        hf_data, batch_size, num_replicas=world_size, rank=rank, segment_size=MAX_LENGTH
+        hf_data,
+        batch_size,
+        num_replicas=world_size,
+        rank=rank,
+        segment_size=MAX_LENGTH,
+        skip_segments=processed_segments,
     )
     data = EntropyDataset(hf_data)
 
@@ -239,30 +276,8 @@ def init_distributed_training(
     # ---------------------------------------------------------------------
     # Resume functionality - check if we need to resume from an existing file
     # ---------------------------------------------------------------------
-    resume_mode = False
-    last_sample_ids = []
-    rank_output_file = f"entropies_rank{rank}.arrow"
+    rank_output_file = f"16b{rank+1}_1.arrow"
 
-    # Check if the output file exists to potentially resume
-    if os.path.exists(rank_output_file) and resume_mode:
-        try:
-            # Read the existing Arrow file to get the last batch
-            with pa.memory_map(rank_output_file, "r") as source:
-                reader = pa.ipc.open_file(source)
-                # Get the last batch if any batches exist
-                num_processed_batches = reader.num_record_batches
-                if num_processed_batches > 0:
-                    resume_mode = True
-                    print(
-                        f"Rank {rank}: Found existing file with {num_processed_batches} batches."
-                    )
-                    print(
-                        f"Rank {rank}: Last batch has {len(last_sample_ids)} samples."
-                    )
-        except Exception as e:
-            print(f"Rank {rank}: Error reading existing file: {e}")
-            print(f"Rank {rank}: Starting from beginning")
-            resume_mode = False
 
     entropy_model = Evo2("evo2_1b_base", device=rank)
     entropies_buffer = []
@@ -277,22 +292,16 @@ def init_distributed_training(
     try:
         with pa.OSFile(rank_output_file, "wb") as sink:
             with pa.ipc.new_file(sink, schema) as writer:
-                data_iter = iter(dataloader)
-                if resume_mode:
-                    for _ in range(num_processed_batches):
-                        try:
-                            next(data_iter)
-                        except StopIteration:
-                            break
+                data_iter = iter(dataloader)  # Sampler already skips processed segments
                 for tokens, sample_ids, texts in data_iter:
                     tokens = tokens.to(
-                        dtype=torch.int, device=rank
-                    )  # push tokens to GPU
+                        dtype=torch.int, device=device  # push tokens to chosen device
+                    )
 
                     # Calculate entropies
                     start_time = time.time()
                     scores, batch_tokens = calculate_entropies(
-                        tokens, entropy_model, device=rank
+                        tokens, entropy_model, device=device
                     )
                     end_time = time.time()
                     print(
