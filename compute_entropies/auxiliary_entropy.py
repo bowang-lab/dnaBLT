@@ -228,7 +228,7 @@ def init_distributed_training(
 
     # Message indicating the process has passed the barrier
     print(f"Process {rank} passed barrier")
-    hf_data = load_dataset(f"{data_path}/stage1", split=split).with_format("torch")
+    hf_data = load_dataset(f"LongSafari/open-genome", "stage1", split=split).with_format("torch")
     # ---------------------------------------------------------
     # Count how many segments have already been processed
     # across all previously saved rank files so we can
@@ -238,7 +238,7 @@ def init_distributed_training(
     if rank == 0:
         import glob
 
-        for afile in glob.glob("16b*.arrow"):
+        for afile in glob.glob("/large_storage/goodarzilab/ashah/16b*.arrow"):
             try:
                 with pa.memory_map(afile, "r") as src:
                     reader = pa.ipc.open_file(src)
@@ -276,7 +276,7 @@ def init_distributed_training(
     # ---------------------------------------------------------------------
     # Resume functionality - check if we need to resume from an existing file
     # ---------------------------------------------------------------------
-    rank_output_file = f"16b{rank+1}_1.arrow"
+    rank_output_file = f"/large_storage/goodarzilab/ashah/16b{rank+1}_1.arrow"
 
 
     entropy_model = Evo2("evo2_1b_base", device=rank)
@@ -361,16 +361,19 @@ def init_distributed_training(
         # -----------------------------------------------------------------
         # 6. Destroy process group to clean up
         # -----------------------------------------------------------------
+        dist.barrier()
         dist.destroy_process_group()
 
 
 def main_worker(local_rank, args):
-    print(os.environ["SLURM_PROCID"])
-    if "SLURM_PROCID" in os.environ:
-        node_rank = int(os.environ["SLURM_PROCID"])
+    # Determine node_rank safely—works whether or not we're inside a SLURM job.
+    node_rank_env = os.environ.get("SLURM_PROCID")
+    if node_rank_env is not None:
+        node_rank = int(node_rank_env)
+        print(f"node rank (from SLURM_PROCID): {node_rank}")
     else:
         node_rank = 0
-    print("node rank:", node_rank)
+        print("SLURM_PROCID not found; defaulting node rank to 0")
     global_rank = node_rank * args.gpu_per_node + local_rank
     world_size = args.world_size
     print("global rank:", global_rank)

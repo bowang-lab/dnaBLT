@@ -1,0 +1,42 @@
+alias avail='scontrol show node | awk '\''
+BEGIN {print "=== Available Resources for goodarzilab Reservation ==="}
+/NodeName=/ {node=$1; split(node,a,"="); nodename=a[2]}
+/CfgTRES=/ {cfgtres=$0}
+/AllocTRES=/ {alloctres=$0}
+/Reservations=.*goodarzilab_gpu_priority/ {
+    split(cfgtres, cfg, "=|,")
+    split(alloctres, alloc, "=|,")
+    
+    for (i in cfg) {
+        if (cfg[i] == "cpu") cfgcpu = cfg[i+1]
+        if (cfg[i] == "mem") {
+            cfgmem = cfg[i+1]
+            gsub(/M/, "", cfgmem)
+            cfgmem = cfgmem / 1024  # Convert to GB
+        }
+        if (cfg[i] == "gres/gpu") cfggpu = cfg[i+1]
+    }
+    
+    alloccpu = allocmem = allocgpu = 0
+    
+    for (i in alloc) {
+        if (alloc[i] == "cpu") alloccpu = alloc[i+1]
+        if (alloc[i] == "mem") {
+            allocmem = alloc[i+1]
+            gsub(/G/, "", allocmem)
+        }
+        if (alloc[i] == "gres/gpu") allocgpu = alloc[i+1]
+    }
+    
+    availcpu = cfgcpu - alloccpu
+    availmem = cfgmem - allocmem  
+    availgpu = cfggpu - allocgpu
+   
+    printf "\nNode: %s\n", nodename
+    printf "  CPU: %d\n", availcpu
+    printf "  Memory: %.2f GB\n", availmem
+    printf "  GPUs: %d\n", availgpu
+    printf "------------------------\n"
+}
+END {print "\n=== End of Report ==="}
+'\'''

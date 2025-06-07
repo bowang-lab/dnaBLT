@@ -57,22 +57,24 @@ def shard_sort_key(file: str):
     return int(match.group(1))
 
 
-def _gather_all_shards(dataset_files: list[str], index: int, modulo: int) -> list[str]:
+def _gather_all_shards(dataset_files: list[str], index: int, modulo: int):
     """
     Deterministically assign a disjoint subset of `dataset_files` to the
     **rank** identified by `index`, assuming `modulo` total ranks.
     """
     my_batches = []
     reader_cache = {}
+    path_to_id_map = {path: i for i, path in enumerate(dataset_files)}
+    
     global_batch_idx = 0
     for path in dataset_files:
         reader = pa.ipc.open_file(path)
         reader_cache[path] = reader  # Cache the reader to avoid reopening
         for i in range(reader.num_record_batches):
             if global_batch_idx % modulo == index:
-                my_batches.append((path, i))
+                my_batches.append((path_to_id_map[path], i))
             global_batch_idx += 1
-    return my_batches, reader_cache
+    return my_batches, reader_cache, path_to_id_map
 
 
 def maybe_truncate_string(text: str, max_length: int):
@@ -116,7 +118,8 @@ class ArrowFileIterator:
         self.dataset_files = self._initialize_dataset_files(file_path, dataset_files, file_format)
 
         # Split files across ranks (DDP processes), not DataLoader workers
-        self.batches, self.reader_cache = _gather_all_shards(self.dataset_files, self.worker_id, self.num_workers)
+        self.batches, self.reader_cache, self.path_to_id_map = _gather_all_shards(self.dataset_files, self.worker_id, self.num_workers)
+        self.id_to_path_map = {v: k for k, v in self.path_to_id_map.items()} # Create inverse map
         # print(f"Worker {self.worker_id}:", self.batches[:5], "...", len(self.batches), "batches total")
         self.current_batch_idx = 0
         # Initialize RNG for shuffling if needed
@@ -141,7 +144,9 @@ class ArrowFileIterator:
             )
 
     def create_iter(self) -> Generator[BltExample, Any, None]:
-        for path, i in self.batches[self.current_batch_idx:]:
+        for path_id, i in self.batches[self.current_batch_idx:]:
+            self.current_batch_idx += 1
+            path = self.id_to_path_map[path_id] # Retrieve path using ID
             yield self.reader_cache[path].get_batch(i)
 
     def __iter__(self):
